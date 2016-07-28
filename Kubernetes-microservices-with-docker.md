@@ -1,6 +1,6 @@
 ---
 title: Kubernetes Microservices with Docker
-date: TODO
+date: 2016-07-27 14:18:13
 tags: [Kubernetes,Docker,Microservice,分布式,笔记]
 categories: Docker
 ---

@@ -248,13 +248,13 @@ db0eb6d58f8d        tutum/influxdb:0.8.8      "/run.sh"                3 hours a
 ##### 测试事件监控效果
 
 浏览器中连续访问 http://10.88.147.128:3000/ 6 次
-
+```
 influxdb 网站 http://10.88.147.128:8083/ ，首页 Databases 部分，点击 metric 对应的 Explore Data，在查询页面中运行 **list series**，得到全部 series
-> list_series_result
-> time  name
-> 0     count_request.count
-> 0     response_time.timer
-
+list_series_result
+time  name
+0     count_request.count
+0     response_time.timer
+```
 查询页面中查询 select value from response_time.timer，报错：ERROR: Field value doesn't exist in series response_time.timer
 
 查询 select * from response_time.timer 得到一些图和表，发现 fields 中没有 value 字段，有的是 count 字段  (这个查询比较慢，要耐心 ...)
@@ -262,10 +262,11 @@ influxdb 网站 http://10.88.147.128:8083/ ，首页 Databases 部分，点击 m
 查询 select count from response_time.timer 得到 count 字段相关的图和表；下面去 grafana 中查看
 
 grafana 网站 http://10.88.147.128:3300/ ，
-> Home -> New (to create new dashboard) 进入新的 dashboard 页面
-> 点击左边的小条处 -> Add Panel -> Graph -> Save Dashboard
-> Graph 中间上方 "no title (click here)" 点击 -> Edit 打开 Edit form
-> 选中 Metric Tab 页， Series 框输入 response_time.timer，select 框中选择 mean(count)，保持其他选项不变 (比如 group by time = 30s)
-> 得到时序图，哈哈哈
-
+```
+Home -> New (to create new dashboard) 进入新的 dashboard 页面
+点击左边的小条处 -> Add Panel -> Graph -> Save Dashboard
+Graph 中间上方 "no title (click here)" 点击 -> Edit 打开 Edit form
+选中 Metric Tab 页， Series 框输入 response_time.timer，select 框中选择 mean(count)，保持其他选项不变 (比如 group by time = 30s)
+得到时序图，哈哈哈
+````
 同理还可以查看 count_request.count 相关的图表和数据，从略

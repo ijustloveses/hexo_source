@@ -25,7 +25,7 @@ row 是由有相同 row key 的多个 columns 组成的，每个 column 加上�
 
 每个 cell 可能有多个不同的版本，对应不同的时间戳，cell 还可以被称为 KeyValue 对儿
 
-于是，换句话说，row 又可以定义为具有先相同 row key 的一组 cells
+于是，换句话说，row 又可以定义为具有相同 row key 的一组 cells
 
 和传统 RDBMSs 不同，HBase 是稀疏存储的，如果 row key 对应的某 column 的值不存在，那么在 HBase 中就确实不会存储这个 column，而不是存储 null
 
@@ -69,8 +69,9 @@ Keys | CF1/CQ1 | CF1/CQ2 | CF2/CQ1
 
 在 HBase 中存储为
 
-042 | CF1 | CQ1 | C
+Keys| CF  | CQ  | val
 ----|-----|-----|---
+042 | CF1 | CQ1 | C
 042 | CF2 | CQ1 | E
 123 | CF1 | CQ1 | I
 123 | CF1 | CQ2 | A
@@ -79,7 +80,7 @@ Keys | CF1/CQ1 | CF1/CQ2 | CF2/CQ1
 
 ### Internal Table Operations
 
-##### Compaction
+#### Compaction
 
 HBase 把接收到的操作数据保存到 memstore 中，当 memstore 满了，就会 flush 到 HFile 中，于是就会在 HDFS 中产生很多的小文件
 
@@ -99,7 +100,7 @@ Major Compaction 则是 Region 中 (甚至 Table 中) 的 HFiles 全部被选中
 
 上例中的 cell 的全部 1~3 版本都可以在 Major Compaction 中被删除，达到完全 cleanup 的效果
 
-##### Splits (Auto-Sharding)
+#### Splits (Auto-Sharding)
 
 和 Compaction 正好相反，随着 Compaction 的进行，HFiles 越来越大，也会导致问题，因为越大就越难于解析，难于进一步的 Compaction 等等
 
@@ -109,9 +110,74 @@ HBase 配置了一个 maximum HFile size，0.94 版本之后设置为 10 GB，�
 
 还记得 Region 和 hbase:meta 表记录着数据 row key 范围的上下界，故此 Splits 一定不会把同一个 row key 的不同 column 分到不同的 region 中，即 All the columns stay together
 
-##### Balancing
+#### Balancing
 
 Regions 会被 Split，系统会 Fail，新的 servers 会加到 cluster 中来，故此负载会有可能不再很好的分布在集群的 RegionServers 中
 
 于是 HBase 每 5 分钟会运行 load balancer 来协调负载；0.96 版本后，默认使用 StochasticLoadBalancer 来做 balancing
 
+
+HBase Sizing and Tuning
+=========================
+
+### Hadoop Tuning
+
+YARN allows for specific tuning around the number of CPUs utilized and memory consumption. Three main functions to take into consideration are:
+
+- yarn.nodemanager.resource.cpu-vcores
+    Number of CPU cores that can be allocated for containers.
+    由于超线程 CPU 的存在， total vcores = physical-cores * 1.5
+    这样，配置值为 total vcores - HBase 1 vocre - DataNode 1 vcore - NodeManager 1 vcore - 操作系统 1 vcore - 其他可能的服务如 Impala/Solr 1 vcore
+
+- yarn.nodemanager.resource.memory-mb
+    Amount of physical memory, in megabytes, that can be allocated for containers.
+    It is important not to over allocate memory for the node: 操作系统 8-16 GB，DataNode 2-4 GB，HBase 12-24 GB，其他分给 YARN framework
+    HBase heap space 不要超过 24 GB，否则会导致 garbage collection 过程时间过长(超过 30s)，使得 RegionServer 在 zookeeper 中超时
+
+- yarn.scheduler.minimum-allocation-mb
+    The minimum allocation for every container request at the RM, in megabytes，推荐 1-2 GB
+
+### HBase Tuning
+
+#### Write-heavy workload
+
+Two main ways to get data into HBase: either through API (Java, Thrift, REST) or by using bulk load.
+
+最重要的区别在于，API 的方法要使用 WAL (write ahead log) 和 memstore，而 bulk load 是一种 short-circuit 短路型写操作，绕过了 WAL 和 memstore
+
+##### API-driven write model
+
+我们说，HBase 最主要的瓶颈就在于 WAL followed by the memstore，以下使一些优化写操作性能的公式 (假设一个 Region 只有一个 CF)
+
+- To determine region count per node
+    availableMemstoreHeap = HBaseHeap * memstoreUpperLimit  (总 HBase 内存堆 乘以 可用于 memstore 的比例)
+    recommendedActiveRegionCount = availableMemstoreHeap / memstoreSize  (前提假设了 Region 只有一个 CF，而每个 CF 对应一个 memstore，故此，可供 memstore 使用的总内存 除以 单个 memstore 的容量即可)
+
+- To determine raw space per node
+    rawSpaceUsed = recommendedRegionCount * maxfileSize * replicationFactor  (Region 数 * 每个 Region 的文件容量 * 复制系数)
+
+- To determine the number of WALs to keep
+    numberOfWALs = availableMemstoreHeap / (WALSize * WALMultiplier)
+
+例如：假设节点 HBase heap = 16 GB， Memstore upper limit = 0.5， Memstore size = 128 MB， Maximum file size = 20 GB， WAL size = 128 MB， WAL rolling multiplier = 0.95， replicationFactor = 3
+
+availableMemstoreHeap = 16,384 MB * 0.5 = 8192 MB
+
+recommendedActiveRegionCount = 8192 MB / 128 MB = 64
+
+rawSpaceUsed = 64 * 20G * 3 = 3.75 TB
+
+numberOfWALs = 8192 MB / (128 MB * 0.95) = 67
+
+##### Bulk load write model
+
+再次模型下，HFile 是在 MapRedue 的 Reduce 阶段被生成，然后使用 completebulkload 工具导入到 HBase 中
+
+#### Read-heavy workload
+
+The primary settings that need to be tweaked are the same as write workloads
+
+- lowering memstore settings
+- raising the block cache to allow for more data to be stored in memory
+
+HBase 0.96 引入了 bucket cache 的概念，允许数据同时在内存和低延迟的 disk (SSD/flash cards) 中保存

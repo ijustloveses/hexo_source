@@ -125,16 +125,23 @@ HBase Sizing and Tuning
 YARN allows for specific tuning around the number of CPUs utilized and memory consumption. Three main functions to take into consideration are:
 
 - yarn.nodemanager.resource.cpu-vcores
+
     Number of CPU cores that can be allocated for containers.
+
     由于超线程 CPU 的存在， total vcores = physical-cores * 1.5
+
     这样，配置值为 total vcores - HBase 1 vocre - DataNode 1 vcore - NodeManager 1 vcore - 操作系统 1 vcore - 其他可能的服务如 Impala/Solr 1 vcore
 
 - yarn.nodemanager.resource.memory-mb
+
     Amount of physical memory, in megabytes, that can be allocated for containers.
+
     It is important not to over allocate memory for the node: 操作系统 8-16 GB，DataNode 2-4 GB，HBase 12-24 GB，其他分给 YARN framework
+
     HBase heap space 不要超过 24 GB，否则会导致 garbage collection 过程时间过长(超过 30s)，使得 RegionServer 在 zookeeper 中超时
 
 - yarn.scheduler.minimum-allocation-mb
+
     The minimum allocation for every container request at the RM, in megabytes，推荐 1-2 GB
 
 ### HBase Tuning
@@ -150,13 +157,17 @@ Two main ways to get data into HBase: either through API (Java, Thrift, REST) or
 我们说，HBase 最主要的瓶颈就在于 WAL followed by the memstore，以下使一些优化写操作性能的公式 (假设一个 Region 只有一个 CF)
 
 - To determine region count per node
+
     availableMemstoreHeap = HBaseHeap * memstoreUpperLimit  (总 HBase 内存堆 乘以 可用于 memstore 的比例)
+
     recommendedActiveRegionCount = availableMemstoreHeap / memstoreSize  (前提假设了 Region 只有一个 CF，而每个 CF 对应一个 memstore，故此，可供 memstore 使用的总内存 除以 单个 memstore 的容量即可)
 
 - To determine raw space per node
+
     rawSpaceUsed = recommendedRegionCount * maxfileSize * replicationFactor  (Region 数 * 每个 Region 的文件容量 * 复制系数)
 
 - To determine the number of WALs to keep
+
     numberOfWALs = availableMemstoreHeap / (WALSize * WALMultiplier)
 
 例如：假设节点 HBase heap = 16 GB， Memstore upper limit = 0.5， Memstore size = 128 MB， Maximum file size = 20 GB， WAL size = 128 MB， WAL rolling multiplier = 0.95， replicationFactor = 3

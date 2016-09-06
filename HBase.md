@@ -117,6 +117,8 @@ Regions 会被 Split，系统会 Fail，新的 servers 会加到 cluster 中来�
 于是 HBase 每 5 分钟会运行 load balancer 来协调负载；0.96 版本后，默认使用 StochasticLoadBalancer 来做 balancing
 
 
+
+
 HBase Sizing and Tuning
 =========================
 
@@ -192,3 +194,76 @@ The primary settings that need to be tweaked are the same as write workloads
 - raising the block cache to allow for more data to be stored in memory
 
 HBase 0.96 引入了 bucket cache 的概念，允许数据同时在内存和低延迟的 disk (SSD/flash cards) 中保存
+
+
+
+
+Table Design
+===============
+
+### 一些表设计中的相关考虑
+
+#### Keys Distribution
+
+HBase 中数据的 key 往往使用业务逻辑中的某些字段，而有时这些字段可能并不均匀分布，这导致了 hotspots 现象，引起负载不平衡，影响效率
+
+一种解决方法是采用非局部敏感的 Hash (这样，即使相似的 key 也会产生很大差异的 hash 值)，然后使用 hash 结果来做 key
+
+#### Compression
+
+前面说过，HBase 数据的 HFile 是以 Block 为单位存储的，每个 Block 默认 64 KB，不压缩。实践中发现，对 Block 压缩存储总是会提升性能和效率
+
+通常的压缩算法有 LZO, GZ, SNOOPY, LZ4；每种算法各有优缺点，比如 GZ 压缩比高，但是操作更占用资源，相反的 SNOOPY 压缩比不高，但是压缩、解压速度都很快
+
+#### Data block encoding
+
+这是 HBase 的一个属性，用于对 keys 进行编码存储，具体来说就是如果基于前面已保存的 keys 来编码当前 key
+
+常用算法为 FAST_DIFF，让 HBase 只存储当前 key 和 previous key 之间的 difference
+
+还记得最细粒度下 HBase 中存储的其实是 cell，或者说一个 (key, cf, cq, val) 的四元组。那么对于一个有很多个字段 (cells) 的 row 记录，只存储 difference 会减少很多存储空间
+
+#### Bloom filter
+
+Bloom filter 可以是 False positive (hash conflict)，但是不会 False Negative。这样，可以在查询的时候，先以很小代价判断 key 是否存在，减少无谓的 I/O 开销
+
+#### Presplitting
+
+Presplitting 是指让 HBase 在创建 table 的时候，预先把 table 分开为多个 Regions 存储，保证初始化时候的负载就分布在多个 Regions 上，避免形成 hotspots
+
+#### 建表实例
+
+```
+# /usr/local/hbase/bin/hbase shell
+
+hbase(main):001:0> create 'sensors', {NUMREGIONS => 6, SPLITALGO => 'HexStringSplit'}, {NAME => 'v', COMPRESSION => 'SNAPPY', BLOOMFILTER => 'NONE', DATA_BLOCK_ENCODING => 'FAST_DIFF'}
+ERROR: org.apache.hadoop.hbase.DoNotRetryIOException: java.lang.RuntimeException: native snappy library not available
+看到，一些压缩算法需要预先安装对应的包才能工作，比如 SNOOPY
+
+那么，去掉 COMPRESSION
+hbase(main):002:0> create 'sensors', {NUMREGIONS => 6, SPLITALGO => 'HexStringSplit'}, {NAME => 'v', BLOOMFILTER => 'NONE', DATA_BLOCK_ENCODING => 'FAST_DIFF'}
+=> Hbase::Table - sensors
+
+hbase(main):009:0> describe 'sensors'
+Table sensors is ENABLED
+sensors
+COLUMN FAMILIES DESCRIPTION
+{NAME => 'v', DATA_BLOCK_ENCODING => 'FAST_DIFF', BLOOMFILTER => 'NONE', REPLICATION_SCOPE => '0', VERSIONS => '1', COMPRESSION => 'NONE', MIN
+_VERSIONS => '0', TTL => 'FOREVER', KEEP_DELETED_CELLS => 'FALSE', BLOCKSIZE => '65536', IN_MEMORY => 'false', BLOCKCACHE => 'true'}
+
+hbase(main):010:0> put 'sensors', 'key1', 'v:', 'val1'
+0 row(s) in 0.0200 seconds
+
+hbase(main):022:0> put 'sensors', 'key2', 'v:f1', 'val2'
+0 row(s) in 0.0220 seconds
+
+hbase(main):024:0* scan 'sensors'
+ROW                                  COLUMN+CELL
+ key1                                column=v:, timestamp=1473144773543, value=val1
+ key2                                column=v:f1, timestamp=1473144907953, value=val2
+2 row(s) in 0.0790 seconds
+```
+
+NUMREGIONS 和 SPLITALGO 仅用于创建 table，而并不保存在 table 的 metadata里。故此，一旦创建了 table，那么就无法再去获取这两个参数的信息了
+
+

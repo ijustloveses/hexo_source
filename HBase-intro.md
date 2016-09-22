@@ -1,6 +1,6 @@
 ---
 title: Architecting HBase Applications
-date: TODO
+date: 2016-09-22 13:08:00
 tags: [Architect,HBase,NoSql]
 categories: HBase
 ---

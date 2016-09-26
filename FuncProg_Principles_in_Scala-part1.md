@@ -16,5 +16,7 @@ Tools Setup
 
 > docker pull hseeberger/scala-sbt
 
+运行
 
+> docker run -d -v ${absolute_path_in_host}:/root/workspace/scala docker.io/hseeberger/scala-sbt sleep infinity
 

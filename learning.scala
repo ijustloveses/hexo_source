@@ -22,11 +22,53 @@ object Hello {
 
     def test_array(): Unit = {
         print_banner("testing array ...")
-        val arr = Array(2,4,6,8)
+        val arr = Array(2,4)
+        // 两种遍历方式
         for(i <- 0 until arr.length) {
             println(arr(i))
         }
         for(elem <- arr) println(elem)
+        // 定义数组
+        val a = new Array[Int](3)  // 定长
+        for(elem <- a) println(elem)  // 0, 0, 0
+        val s = new Array[String](3) 
+        for(elem <- s) println(elem)  // String 的初始化为 null, null, null，而不是 "" "" ""
+        val t = new Array("Hello", "World") //定长 + 初始化
+        t(0) = "Goodbye"    // 取元素 + 赋值
+        val b = ArrayBuffer[Int]()  // 变长数组
+        b += 1   // (1)
+        b += (1,2,3)  // (1,1,2,3)
+        b ++= Array(5,8)  // (1,1,2,3,5,8)
+        b.trimEnd(2)   // 尾部去掉两个 (1,1,2,3)
+        b.insert(2, 2) // 位置 2 (从 0 开始) 加入 2 (1,1,2,2,3)
+        b.insert(2,7,8) // 位置 2 (从 0 开始) 加入 7,8 (1,1,7,8,2,2,3)
+        b.remove(2)     // 去掉位置 2 (1,1,8,2,2,3)
+        b.remove(2,2)   // 位置 2开始去掉两个 (1,1,2,3)
+        b.toArray
+        for(elem <- b) println(elem)
+        // yield / filter / map /sum
+        val c = Array(2,3,5,7)
+        val res = for(elem <- c if elem % 2 == 0) yield 2 * elem
+        for(elem <- res) println(elem)  // 4
+        val res1 = c.filter(_ %2 == 0).map(2 * _)
+        for(elem <- res1) println(elem)  // 4
+        println(c.sum)  // 17
+        // 排序
+        val d = ArrayBuffer(1,7,2,9)
+        val bSorted = d.sorted
+        for(elem <- bSorted) println(elem)  // 1,2,7,9
+        scala.util.Sorting.quickSort(d)    // sort in place
+        for(elem <- d) println(elem)  // 1,2,7,9
+        // mkString
+        println(d.mkString(" and "))   // 1 and 2 and 7 and 9
+        println(d.mkString("(", ",", ")"))  // (1,2,7,9)
+        // 高维数组
+        val mat = Array.ofDim[Double](2,3)
+        mat(1)(2) = 42
+        for(i <- 0 to 1; j <- 0 to 2) println(mat(i)(j))  //0.0 0.0 0.0 0.0 0.0 42
+        val triangle = new Array[Array[Int]](3)
+        for (i <- 0 until triangle.length) triangle(i) = new Array[Int](i + 1)
+        for (i <- 0 until triangle.length) println(triangle(i).length)  // 1 2 3
     }
 
     def test_map(): Unit = {

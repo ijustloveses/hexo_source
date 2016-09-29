@@ -1,3 +1,4 @@
+import scala.collection.mutable.ArrayBuffer
 object Hello {
     def main(args: Array[String]): Unit = {
         test_tuple
@@ -30,10 +31,10 @@ object Hello {
         for(elem <- arr) println(elem)
         // 定义数组
         val a = new Array[Int](3)  // 定长
-        for(elem <- a) println(elem)  // 0, 0, 0
+        for(elem <- a) println(elem)  // Int 的初始值为 0，故此 0, 0, 0
         val s = new Array[String](3) 
-        for(elem <- s) println(elem)  // String 的初始化为 null, null, null，而不是 "" "" ""
-        val t = new Array("Hello", "World") //定长 + 初始化
+        for(elem <- s) println(elem)  // String 的初始化为 null，而不是 ""， 故此 null, null, null
+        val t = Array("Hello", "World") //定长 + 初始化
         t(0) = "Goodbye"    // 取元素 + 赋值
         val b = ArrayBuffer[Int]()  // 变长数组
         b += 1   // (1)
@@ -57,11 +58,13 @@ object Hello {
         val d = ArrayBuffer(1,7,2,9)
         val bSorted = d.sorted
         for(elem <- bSorted) println(elem)  // 1,2,7,9
-        scala.util.Sorting.quickSort(d)    // sort in place
-        for(elem <- d) println(elem)  // 1,2,7,9
+        // scala.util.Sorting.quickSort(d)    这个将会引发错误：overloaded method value quickSort with alternatives
+        val e = d.toArray
+        scala.util.Sorting.quickSort(e)    // sort in place
+        for(elem <- e) println(elem)  // 1,2,7,9
         // mkString
         println(d.mkString(" and "))   // 1 and 2 and 7 and 9
-        println(d.mkString("(", ",", ")"))  // (1,2,7,9)
+        println(d.mkString("<", ",", ">"))  // <1,2,7,9>
         // 高维数组
         val mat = Array.ofDim[Double](2,3)
         mat(1)(2) = 42

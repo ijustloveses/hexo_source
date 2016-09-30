@@ -8,6 +8,7 @@ object Hello {
         test_lambda
         test_inline
         test_multi_args
+        test_string
     }
 
     def print_banner(msg: String): Unit = {
@@ -19,6 +20,8 @@ object Hello {
         val triple = (100, "Hello", "World")
         println(triple._1)  // 100
         println(triple._2)  // Hello
+        val (score, hello, _) = triple
+        println("Score is  " + score + " and Hello is " + hello)
     }
 
     def test_array(): Unit = {
@@ -80,7 +83,15 @@ object Hello {
         for((k,v) <- ages) {
             println("Key is " + k + ", value is " + v)
         }
-        for((k,_) <- ages) println("Key is " + k )
+        // 生成新的 map
+        val dualages = for((k,v) <- ages) yield (k, v * 2)
+        for((_,v) <- dualages) println("age after doubled is: " + v)
+        // 可变 map
+        val scores = scala.collection.mutable.Map("Scala" -> 7, "Hadoop" -> 9, "Spark" -> 10)
+        println("scores.getOrElse(\"Hadoop\", 0) is " + scores.getOrElse("Hadoop", 0))
+        scores += ("R" -> 9)
+        scores -= "Hadoop"
+        println("scores.getOrElse(\"Hadoop\", 0) after remove Hadoop is " + scores.getOrElse("Hadoop", 0))
     }
 
     def test_for(): Unit = {
@@ -111,5 +122,18 @@ object Hello {
             res
         }
         println("result of concat(a, b, c) is " + concat("a", "b", "c"))
+    }
+
+    def test_string(): Unit = {
+        print_banner("testing string func ...")
+        // partition
+        val (head, tail) = "Rocky Spark".partition(_.isUpper)
+        println("first part of partition is : " + head)
+        println("second part of partition is : " + tail)
+        // zip
+        val symbols = Array("[", "-", "]")
+        val counts = Array(2, 5, 2)
+        val pairs = symbols.zip(counts)
+        for ((x, y) <- pairs) print(x*y)
     }
 }

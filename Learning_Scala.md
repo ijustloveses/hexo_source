@@ -1,6 +1,6 @@
 ---
-title: Learning Scala
-date: TODO
+title: First Step on Scala
+date: 2016-10-08 09:37:14
 tags: [Scala,sbt,Docker]
 categories: Scala
 ---

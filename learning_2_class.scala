@@ -8,16 +8,19 @@ class Basic {                // 这里由于默认主构造器没有参数，故
 class GetterSetter {
     var age = 0              // 自动生成 Getter & Setter
     val gender = 'F'         // 自动生成 Getter，由于不可变，故此不生成 Setter
-    private var name = _     // 不会自动生成 Getter & Setter；另，name 初始化为空
-    def pubname = name       // 外部可以使用 pubname 来使用 name
+    private var name: String = _     // 不会自动生成 Getter & Setter；另，name 初始化为空，注意这里必须要指定类型，否则无法绑定类型
+    def pubname = name       // getter
+    def pubname_= (value: String) = name = value       // setter，注意这里 _= 一定要写在一起，不能分隔空格; 就是说，pubname_= 合在一起是函数名
 }
 
 class PrivateAttr {
     private var privateAge = 0            // 类级别的私有属性
-    def age = privateAge
+    def age = privateAge                  // getter
+    def age_= (value: Int) = privateAge = value  // setter
 
     private[this] var privateWeight = 0   // 私有属性，不仅是类私有，而且是实例私有，不能被同类的其他实例访问
     def weight = privateWeight
+    def weight_= (value: Int) = privateWeight = value
 
     def isYounger(other: PrivateAttr) = privateAge < other.privateAge
     // def isThinner(other: PrivateAttr) = privateWeight < other.privateWeight  这个会失败，因为是私有属性 private[this]
@@ -93,6 +96,19 @@ class ClassApply {
     def apply() = println("Have a try on class-level apply")
 }
 
+class Parent(val name: String, var age: Int) {    // 默认继承自 Object；name & age 是欲定义的成员变量，故此前面加上了 var/val
+    println("primary constructor of Parent")
+    val school = "BJU"
+    def sleep = "8 hours"
+    override def toString = "I am a parent"       // 重写 Object 的 toString 函数
+}
+
+class Child(name: String, age: Int, val gender: String) extends Parent(name, age) {     // name & age 是继承来的，故此不用加 val/var 了
+    println("primary constructor of Child")
+    override val school = "TSU"                   // 重写字段
+    override def toString = "I am a child, sleep " + super.sleep           // 重写函数，并通过 super 调用父类函数
+}
+
 object Hello {
     def main(args: Array[String]): Unit = {
         test_basic
@@ -105,6 +121,7 @@ object Hello {
         test_friend_class
         test_obj_apply
         test_class_apply
+        test_child
     }
 
     def print_banner(msg: String): Unit = {
@@ -122,10 +139,10 @@ object Hello {
 
     def test_getter_setter(): Unit = {
         print_banner("test getter setter")
-        gs = new GetterSetter()
+        var gs = new GetterSetter()
         gs.age = 25
         println("age is " + gs.age)
-        // gs.gender = "M"                     // 这句会报错，不能 set
+        // gs.gender = "M"                     // 这句会报错，val 类型不能 set
         println("gender is " + gs.gender)
         gs.pubname = "John"                    // pubname 既可以 set 又可以 get
         println("name is " + gs.pubname)
@@ -133,30 +150,31 @@ object Hello {
 
     def test_private_attr(): Unit = {
         print_banner("test private attr")
-        pa1 = new PrivateAttr()
-        pa2 = new PrivateAttr()
+        var pa1 = new PrivateAttr()
+        var pa2 = new PrivateAttr()
         pa1.age = 5
         pa2.age = 27
-        println(if pa1.isYounger(pa2) "yes, younger" else "no, older")   // output "yes, younger"
+        println(if (pa1.isYounger(pa2)) "yes, younger" else "no, older")   // output "yes, younger"
     }
 
     def test_constructor(): Unit = {
         print_banner("test constructor")
-        cons1 = new Constructor()
+        var cons1 = new Constructor()
         cons1.name = "John"
-        cons2 = new Constructor("Leon")
+        var cons2 = new Constructor("Leon")
         cons1.say
         cons2.say
     }
 
     def test_private_constructor(): Unit = {
         print_banner("test private constructor")
-        // con = new PrivateConstructor("John", 25)   这个会报错，因为是 private 的
-        con = new PrivateConstructor("John", 25, "male")
+        // val con = new PrivateConstructor("John", 25)   这个会报错，因为是 private 的
+        val con = new PrivateConstructor("John", 25, "male")
         con.say
     }
 
     def test_outer_inner(): Unit = {
+        print_banner("test outer inner")
         val o1 = new Outer("O1")
         val o2 = new Outer("O2")
         val i1 = new o1.Inner("I1")      // 注意看内部类初始化时，是要指定其所属外部类实例的
@@ -167,22 +185,34 @@ object Hello {
     }
 
     def test_singleton(): Unit = {
-        println("1st incr: " + Singleton.incr)      // 1，直接使用静态类名，不需要实例化
-        println("2nd incr: " + Singleton.incr)      // 2
+        print_banner("test singleton")
+        println("1st incr: " + Singleton.incr)      // output 1，直接使用静态类名，不需要实例化
+        println("2nd incr: " + Singleton.incr)      // output 2
     }
 
     def test_friend_class(): Unit = {
+        print_banner("test friend class")
         val fc = new Singleton()
-        println("cnt after incr: " + fc.cur_cnt)
+        println("cnt after incr: " + fc.cur_cnt)    // output 3，仍然是访问静态类的静态成员 cnt
     }
 
     def test_obj_apply(): Unit = {
+        print_banner("test object apply")
         val a = ObjApply()         // 把 object 名字当作函数来调用，内部调用 apply
         a.foo
     }
 
     def test_class_apply(): Unit = {
+        print_banner("test class apply")
         val a = new ClassApply()
         a()                        // 把类的实例当作函数来调用，内部调用 apply
+    }
+
+    def test_child(): Unit = {
+        print_banner("test child")
+        val c = new Child("Junior", 5, "M")    // 这里会打印子类和父类构造函数中的消息
+        println("School: " + c.school)
+        println("Gender: " + c.gender)
+        println(c.toString)
     }
 }

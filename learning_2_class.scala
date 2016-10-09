@@ -8,7 +8,7 @@ class Basic {                // 这里由于默认主构造器没有参数，故
 class GetterSetter {
     var age = 0              // 自动生成 Getter & Setter
     val gender = 'F'         // 自动生成 Getter，由于不可变，故此不生成 Setter
-    private var name: String = _     // 不会自动生成 Getter & Setter；另，name 初始化为空，注意这里必须要指定类型，否则无法绑定类型
+    private var name: String = _     // 不会自动生成 Getter & Setter；另，name 初始化为空，注意这里必须要指定类型，否则无法绑定类型；最后，只有 var 可以使用占位符 _ 来初始化
     def pubname = name       // getter
     def pubname_= (value: String) = name = value       // setter，注意这里 _= 一定要写在一起，不能分隔空格; 就是说，pubname_= 合在一起是函数名
 }
@@ -109,6 +109,69 @@ class Child(name: String, age: Int, val gender: String) extends Parent(name, age
     override def toString = "I am a child, sleep " + super.sleep           // 重写函数，并通过 super 调用父类函数
 }
 
+abstract class Abstract(val name: String) {     // 抽象类需要加 abstract 关键字，也可以有带参数的默认构造器
+    var id: Int                        // 抽象类成员变量不能初始化
+    def printmsg                       // 抽象类成员函数同样不能定义
+}
+
+class Concrete(name: String) extends Abstract(name) {    // 继承抽象类的构造器
+    override var id = name.hashCode()                    // 重写成员函数和成员变量，抽象类的子类 override 可以不写，当然写了更清楚
+    override def printmsg {
+        println("id: " + id)   
+    }
+}
+
+// trait 类似于抽象类，也可以提供接口功能；一个 scala 类只能继承一个类，但是可以 with 多个 trait，类似多重继承
+trait Logger {
+    def log (msg: String)       // 抽象方法
+    def show {}    // trait 中可以有具体方法，但是什么都没做
+}
+
+class CLogger extends Logger with Cloneable {                 // Cloneable 也是一个 trait，scala 自带的
+    def log(msg: String) = println("Log: " + msg)             // 抽象方法的重写，可以不带 override
+    def clog {
+        log("It's me")
+    }
+}
+
+trait TraitLogger extends Logger {         // 注意，TraitLogger 甚至没有实现 Logger 的抽象成员函数，只重写了一个具体函数
+    override def show = println("override concrete method in trait")   // 具体方法的重写需要加 override
+}
+
+class Human {
+    println("Human")
+}
+
+trait Teacher extends Human {
+    println("Teather")
+    def teach                     // 抽象方法
+}
+
+trait PianoPlayer extends Human {
+    println("PianoPlayer")
+    def play = {println("I'm playing piano")}    // 具体方法
+}
+
+class PianoTeacher extends Human with Teacher with PianoPlayer {      // 构造函数调用顺序 左 --> 右
+    override def teach = {println("I'm teaching")}
+}
+
+trait Action {
+    def doAction                // trait 定义一个抽象方法
+}
+
+trait AopAction extends Action {
+    abstract override def doAction {    // 这里声明此重写的 do 函数仍然是抽象的
+        println("Init ...")
+        super.doAction                 // 之所以是抽象的，就是因为这里调用 super.do，这个 super 是抽象的
+        println("Done")
+    }
+}
+
+class RealAction extends Action {
+    override def doAction = println("Really do something")
+}
+
 object Hello {
     def main(args: Array[String]): Unit = {
         test_basic
@@ -122,6 +185,10 @@ object Hello {
         test_obj_apply
         test_class_apply
         test_child
+        test_abstract
+        test_trait
+        test_multiple_inherit
+        test_aop
     }
 
     def print_banner(msg: String): Unit = {
@@ -214,5 +281,36 @@ object Hello {
         println("School: " + c.school)
         println("Gender: " + c.gender)
         println(c.toString)
+    }
+
+    def test_abstract(): Unit = {
+        print_banner("test abstract")
+        val conc = new Concrete("extends_from_abstract")
+        conc.printmsg
+    }
+
+    def test_trait(): Unit = {
+        print_banner("test trait")
+        val cl = new CLogger with TraitLogger
+        cl.clog                    // output: "Log: It's me"
+        cl.show                    // output: "override concrete method in trait"
+    }
+    
+    def test_multiple_inherit(): Unit = {
+        print_banner("test multiple inherit")
+        val t = new PianoTeacher
+        t.play
+        t.teach
+        val t2 = new Human with Teacher with PianoPlayer {
+            def teach = println("I'm teaching")
+        }
+        t2.play
+        t2.teach
+    }
+
+    def test_aop(): Unit = {
+        print_banner("test aop")
+        val ra = new RealAction with AopAction           // 这里，super.do 不再抽象，而是变成了 RealAction 重写的 do 函数
+        ra.doAction                                      // 于是，AopAction trait 混入 RealAction 的运行，实现了 Aop
     }
 }

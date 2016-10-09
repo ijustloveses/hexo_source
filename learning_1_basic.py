@@ -14,7 +14,7 @@ object Hello {
     def print_banner(msg: String): Unit = {
         println("----------" + msg + "----------")
     }
-    
+
     def test_tuple(): Unit = {
         print_banner("testing tuple ...")
         val triple = (100, "Hello", "World")
@@ -35,7 +35,7 @@ object Hello {
         // 定义数组
         val a = new Array[Int](3)  // 定长
         for(elem <- a) println(elem)  // Int 的初始值为 0，故此 0, 0, 0
-        val s = new Array[String](3) 
+        val s = new Array[String](3)
         for(elem <- s) println(elem)  // String 的初始化为 null，而不是 ""， 故此 null, null, null
         val t = Array("Hello", "World") //定长 + 初始化
         t(0) = "Goodbye"    // 取元素 + 赋值
@@ -109,10 +109,10 @@ object Hello {
 
     def test_inline(): Unit = {
         print_banner("testing inline ...")
-        // 必须指定返回值，否则递归时不知道上一次结果的类型
+        // 必须指定返回值类型，否则递归时不知道上一次结果的类型
         def fac(n:Int):Int = if (n <= 0) 1 else n * fac(n - 1)
         println("fac of 5 is " + fac(5))
-    }    
+    }
 
     def test_multi_args(): Unit = {
         print_banner("testing multiple args ...")

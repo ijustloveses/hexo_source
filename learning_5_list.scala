@@ -152,9 +152,10 @@ object Hello {
     def test_mutable():Unit = {
         // 前面的 case 中，List 都是 immutable 的，执行操作后生成新的 List，而不是 in-place 的修改
         // 这里看一下 mutable collection
+        print_banner("test mutable collections")
         import scala.collection.mutable.ListBuffer
         val lb = new ListBuffer[Int]
-        lb += 1
+        lb += 1          // 看到，val 类型仍然可以调整内部元素，不需要定义为 var
         lb += 2
         println(lb)      // ListBuffer(1, 2)?????
 
@@ -186,5 +187,25 @@ object Hello {
         println(stk.top)    // 2
         println(stk.pop)    // 2
         println(stk)        // Stack(1) ?????
+    }
+
+    def test_map():Unit = {
+        print_banner("test map")
+        val data = mutable.Set.empty[Int]
+        data ++= List(4,3,2)
+        data += 1
+        data --= List(2,3)
+        println(data)       // Set(1,2) ???  排序了
+
+        val map = mutable.Map.empty[String, String]
+        map("java") = "yes"
+        map("Scala") = "no"
+        println(map)    // Map(java->yes, Scala->no
+
+        val treeSet = TreeSet("Spark", "Scala", "Hadoop")
+        println(treeSet)    // TreeSeet(Hadoop, Scala, Spark)  排序了
+
+        val treeMap = TreeMap("java->yes", "Scala"->"no")
+        println(treeMap)    // TreeMap(java->yes, Scala->no)
     }
 }

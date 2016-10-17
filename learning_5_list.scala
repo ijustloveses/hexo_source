@@ -6,6 +6,8 @@ object Hello {
         test_orderone_funcs
         test_adv_funcs
         test_obj_funcs
+        test_mutable
+        test_map
     }
 
     def print_banner(msg: String): Unit = {
@@ -140,13 +142,13 @@ object Hello {
     def test_obj_funcs():Unit = {
         print_banner("test class object functions")  // 上面都是 List 类中的函数调用，下面看看 List 伴生对象中的函数
         println(List.apply(1,2,3))    // 等价于 println(List(1,2,3))，输出就是 List(1,2,3)
-        println(List.make(3,5))       // List(5,5,5)
+        println(List.fill(3)(5))       // List(5,5,5)
         println(List.range(1,5))      // List(1,2,3,4)
         println(List.range(9, 1, -3)) // List(9, 6, 3)
 
         println(List(List(1,2), List(3),List(4,5)).flatten)  // List(1,2,3,4,5)
         println(List.concat(List(), List('b'), List('c')))   // List(b, c)
-        println(List.map2(List(2, 5, 1), List(3, 4, 7))(_ * _))    // map2 对两个List 分别map，然后逐对调用方法参数；output(6, 20, 7)
+        println((List(2, 5, 1), List(3, 4, 7)).zipped.map(_ * _))    // map2 对两个List 分别map，然后逐对调用方法参数；output(6, 20, 7)
     }
 
     def test_mutable():Unit = {
@@ -157,28 +159,29 @@ object Hello {
         val lb = new ListBuffer[Int]
         lb += 1          // 看到，val 类型仍然可以调整内部元素，不需要定义为 var
         lb += 2
-        println(lb)      // ListBuffer(1, 2)?????
+        println(lb)      // ListBuffer(1, 2)
 
         import scala.collection.mutable.ArrayBuffer
         val ab = new ArrayBuffer[Int]()
         ab += 1
         ab += 2
-        println(ab)      // ArrayBuffer(1, 2)?????
+        println(ab)      // ArrayBuffer(1, 2)
 
         // mutable queue
+        import scala.collection.immutable.Queue
         val empty = Queue[Int]()
         val queue1 = empty.enqueue(1)
         val queue2 = queue1.enqueue(List(2,3,4))
         val (element, left) = queue2.dequeue
-        println(element + " : " left)        // output 1 : Queue(2,3,4)  ??????
+        println(element + " : " +  left)        // output 1 : Queue(2,3,4)
 
         // immutable queue
-        import scala.collection.mutable.Queue
-        val q = Queue[String]()
+        import scala.collection.mutable.{Queue=>MQ}   // avoid naming conflict
+        val q = MQ[String]()
         q += "a"
         q ++= List("b", "c")
         q.dequeue
-        println(q)      // Queue("b", "c") ????
+        println(q)      // Queue("b", "c")
 
         import scala.collection.mutable.Stack
         val stk = new Stack[Int]
@@ -186,26 +189,28 @@ object Hello {
         stk.push(2)
         println(stk.top)    // 2
         println(stk.pop)    // 2
-        println(stk)        // Stack(1) ?????
+        println(stk)        // Stack(1)
     }
 
     def test_map():Unit = {
         print_banner("test map")
+        import scala.collection.mutable
         val data = mutable.Set.empty[Int]
         data ++= List(4,3,2)
         data += 1
         data --= List(2,3)
-        println(data)       // Set(1,2) ???  排序了
+        println(data)       // Set(1,4) 排序了
 
         val map = mutable.Map.empty[String, String]
         map("java") = "yes"
         map("Scala") = "no"
-        println(map)    // Map(java->yes, Scala->no
+        println(map)    // Map(java->yes, Scala->no)
 
-        val treeSet = TreeSet("Spark", "Scala", "Hadoop")
-        println(treeSet)    // TreeSeet(Hadoop, Scala, Spark)  排序了
+        val treeSet = mutable.TreeSet("Spark", "Scala", "Hadoop")
+        println(treeSet)    // TreeSet(Hadoop, Scala, Spark)  排序了
 
-        val treeMap = TreeMap("java->yes", "Scala"->"no")
+        import scala.collection.immutable.TreeMap
+        val treeMap = TreeMap("java"->"yes", "Scala"->"no")
         println(treeMap)    // TreeMap(java->yes, Scala->no)
     }
 }

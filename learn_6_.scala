@@ -6,6 +6,7 @@ object Hello {
         test_context_bound
         test_class_tag
         test_multiple_bound
+        test_type_constraint
     }
 
     def print_banner(msg: String): Unit = {
@@ -125,5 +126,14 @@ object Hello {
         
         def foo[T : M_A : M_B](i:T) = println("Int : M_A : M_B is OK")
         foo(2)      // 前面 implicit 定义的两个常量使得 Int : M_A : M_B 可以成功
+    }
+
+    def test_type_constraint():Unit = {
+        print_banner("test type constraint")
+        // A =:= B  // A 类型等同于 B 类型
+        // A <:< B  // A 类型是 B 类型的子类
+        def rocky[T](i:T)(implicit ev: T <:< java.io.Serializable) {    // 带一个 implicit 参数，指明 T 是 Serializable 的子类
+            print("Type T is subclass of Serializable")
+        rocky("Spark")
     }
 }

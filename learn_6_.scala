@@ -5,6 +5,7 @@ object Hello {
         test_view_bound
         test_context_bound
         test_class_tag
+        test_multiple_bound
     }
 
     def print_banner(msg: String): Unit = {
@@ -113,5 +114,16 @@ object Hello {
         mkArr(42, 13).foreach(println)
         println("mkArr(Ab, C, De) get:")
         mkArr("Ab", "C", "De").foreach(println)
+    }
+
+    def test_multiple_bound():Unit = {
+        print_banner("test multiple bound")
+        class M_A[T]
+        class M_B[T]
+        implicit val a = new M_A[Int]
+        implicit val b = new M_B[Int]
+        
+        def foo[T : M_A : M_B](i:T) = println("Int : M_A : M_B is OK")
+        foo(2)      // 前面 implicit 定义的两个常量使得 Int : M_A : M_B 可以成功
     }
 }

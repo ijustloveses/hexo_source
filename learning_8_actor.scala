@@ -1,9 +1,11 @@
 import scala.actors.Actor
+import scala.actors.Actor._
 
 object Hello {
     def main(args: Array[String]): Unit = {
         test_actor_basis
         test_actor_more 
+        test_react_loop
     }
 
     def print_banner(msg: String): Unit = {
@@ -63,9 +65,8 @@ object Hello {
                     receive {
                         case msg:String => println("named actor string msg recv: " + msg)
                         case Person(name, age) => println("name actor person recv with name: " + name + " and age: " + age)
-                        case _ => println("named actor recv other msg: " + msg)
+                        case _ => { println("named actor recv other msg"); sender ! "Got!" }  // 给发信者回信
                     }
-                    sender ! "Got!"   // 给发信者回信
                 }
             }
         }
@@ -74,7 +75,7 @@ object Hello {
         MA ! Math.PI
         MA ! Person("JohnDoe", 28)    // 发送 case class
 
-        self.receiveWithin(3000) {case msg => println("MA got msg and replied: " + msg)}    // 原生线程作为 Actor 接受消息，且 3 秒后自动结束
+        self.receiveWithin(3000) {case msg => println("MA got msg and replied: " + msg)}    // 原生线程作为 Actor 接受消息，且 3 秒后自动结束，但是程序不会结束，因为还有 actors 线程在运行
     }
 
     def test_react_loop():Unit = {
@@ -114,5 +115,6 @@ object Hello {
         NR ! Net("google.com", self)
 
         println(self.receiveWithin(1000){case x => x})
+        println(self.receiveWithin(1000){case x => x})    // 一个 receive 或 receiveWithin 只接收一条信息
     }
 }

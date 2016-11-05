@@ -5,11 +5,11 @@ tags: [Docker,笔记]
 categories: Docker
 ---
 
-Some tips on Docker in Practice
+Some Notes on 《Manning Docker in Practice》
 
 <!-- more -->
 
-### Tips
+### Docker fundamentals
 
 - docker diff 命令可以查看容器启动后修改了哪些文件
 - Docker 安装后，其实在机器上安装了 daemon 和 client 两个程序

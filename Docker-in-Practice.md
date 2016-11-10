@@ -29,7 +29,7 @@ Docker 安装后，其实在机器上安装了 daemon 和 client 两个程序
 
 Docker Client 也可以通过 TCP Socket 来访问 Docker Daemon，不过此时 Docker Daemon 暴露在网络中，处于不安全的状态，需谨慎使用这种情况
 
-1. 关掉当前 Docker Daemon
+- 关掉当前 Docker Daemon
 ```
 $ sudo service docker stop 或者
 $ systemctl stop docker
@@ -39,12 +39,12 @@ $ systemctl stop docker
 ps -ef | grep -E 'docker (-d|daemon)\b' | grep -v grep
 ```
 
-2. 通过 TCP Socket 启动新的 Docker Daemon (故此不能使用 service docker start 这样的命令来启动)
+- 通过 TCP Socket 启动新的 Docker Daemon (故此不能使用 service docker start 这样的命令来启动)
 ```
 $ docker daemon -H tcp://0.0.0.0:2375    # 如果不行，试试 [-d] 选项
 ```
 
-3. Docker Client 连接
+- Docker Client 连接
 ```
 $ docker -H tcp://<your host's ip>:2375
 ```

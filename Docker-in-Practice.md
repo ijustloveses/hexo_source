@@ -51,7 +51,7 @@ $ docker -H tcp://<your host's ip>:2375
 
 ### 容器运行为后台服务
 
-通常 Linux 下的 Daemon 服务程序都是通过 nohup xxxx & 这种方式来实现的；不过，docker run 提供了 -d 选项，使得容器可以轻松运行为 Daemon
+通常 Linux 下的 Daemon 服务程序都是通过 nohup \<your command> & 这种方式来实现的；不过，docker run 提供了 -d 选项，使得容器可以轻松运行为 Daemon
 
 Docker run 命令提供 --restart 选项控制服务失败的后处理
 
@@ -65,3 +65,37 @@ Docker run 命令提供 --restart 选项控制服务失败的后处理
 2. docker daemon -g <新的 Storage 目录>
 
 你会发现之前 Docker 的镜像和容器全部都消失掉了，没有关系，只要你杀掉调整位置后的 Docker 服务，再以通常的方式重启 Docker，一切恢复原样
+
+### 使用 socat 作为 proxy 来监控 Docker API traffic
+
+如果想要调试或者研究 Docker 内部的 API 调用流，可以使用 socat 在 Docker Client 和 Docker Daemon 之间搭一个代理：
+
+> Docker Client <==> Socat Unix Domain Socket Proxy <==> Docker Defaut Unix Domain Socket <==> Docker Daemon
+
+使用如下命令
+```
+sudo socat -v UNIX-LISTEN:/tmp/dockerapi.sock UNIX-CONNECT:/var/run/docker.sock &
+```
+-v 使输出可读；UNIX-LISTEN 表示 socat 监听 /tmp/dockerapi.sock；UNIX-CONNECT 表示 socket 连接默认 docker 的 socket，把监听到的请求转发过去；反过来，当接收到 docker 的 response 后，再通过 /tmp/dockerapi.sock 返回给 Docker Client，完成一个成功的请求响应过程
+
+以 docker ps -a 命令为例，Docker Client 的调用方法为：
+```
+docker -H unix:///tmp/dockerapi.sock ps -a
+```
+
+### Linking containers
+
+```
+docker run --name wp-mysql -e MYSQL_ROOT_PASSWORD=yoursecretpassword -d mysql
+docker run --name wordpress --link wp-mysql:mysql -p 10003:80 -d wordpress
+```
+注意，第二条命令要在第一条命令执行之后再等一下才能运行，否则第一个容器还没准备好，第二个命令中的 link 就无效了；使用 docker-compose to rescue !
+
+另外，像上面命令中这样的 setup，需要在 Dockerfile 中 EXPOSE 端口号
+
+### Setting up a local Docker registry
+
+```
+docker run -d -p 5000:5000 -v $HOME/registry:/var/lib/registry registry:2
+```
+如果 Docker Client 在 docker push 或者其他访问时出问题，试试看在启动 Docker Daemon 时加入 --insecure-registry HOSTNAME 选项

@@ -99,3 +99,21 @@ docker run --name wordpress --link wp-mysql:mysql -p 10003:80 -d wordpress
 docker run -d -p 5000:5000 -v $HOME/registry:/var/lib/registry registry:2
 ```
 如果 Docker Client 在 docker push 或者其他访问时出问题，试试看在启动 Docker Daemon 时加入 --insecure-registry HOSTNAME 选项
+
+### 管理容器内服务的启动
+
+通常我们使用 crontab 来控制系统服务的启动，然而这个对于容器来说并不理想，会导致很多问题
+
+相应的，应该使用 Supervisor 来控制服务的启动，通过 pip install supervisor 安装，并通过 /etc/supervisord.conf 配置文件来管理
+
+### docker commit 只能提交文件系统的修改
+
+docker commit 只能提交文件系统的修改，不能保存容器内正在运行中的进程，也不能保存数据库、Docker volumns 等外部依赖组件
+
+### Referring to a specific image in builds
+
+在 build Docker 镜像时，我们都是基于 (FROM) 一个已有的镜像。我们知道，通过镜像 name/repository/tag 都无法真正限制一个镜像保持不变，那么如何让 build 时真正基于一个确定性的镜像呢？
+
+答案是使用镜像 id，比如 FROM 8eaa4ff06b53
+
+更厉害的是，这个镜像 id 甚至不需要有 name/repositary/tag，可以是本地 build 任何镜像时任意步骤所产生的中间镜像 id

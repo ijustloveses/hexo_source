@@ -117,3 +117,68 @@ docker commit 只能提交文件系统的修改，不能保存容器内正在运
 答案是使用镜像 id，比如 FROM 8eaa4ff06b53
 
 更厉害的是，这个镜像 id 甚至不需要有 name/repositary/tag，可以是本地 build 任何镜像时任意步骤所产生的中间镜像 id
+
+### Volumn 的一些注意事项
+
+比如 docker run -v /var/db/tables:/var/data1 -it debian bash
+
+- host 的 /var/db/tables 目录 mount 到容器中的 /var/data1 目录
+- 如果 /var/db/tables 或者 /var/data1 目录不存在，那么在容器启动的时候会创建
+- 如果 /var/data1 目录本来就在镜像中存在，那么在容器启动时，该目录会被消失，并被重新 mount 到 host 的 /var/db/tables；故此切忌使用容器的关键目录
+- Selinux 可能会影响 volumn，比如报错 permission denied
+
+### 如何保留容器中的 Bash History
+
+方法是使用 Volumn 把容器中的 History 文件共享给 host
+```
+docker run -e HIST_FILE=/root/.bash_history \               # 这里设置 History 文件环境变量
+  -v=$HOME/.bash_history:/root/.bash_history \              # 这里把 History 文件 mount 到 host 的 ~/.bash_history 文件
+  -ti ubuntu /bin/bash
+```
+如果想避免把容器的 History 文件和 host 的 History 文件混合在一起，可以把 host 目录设置到另外的地方即可
+
+如果想避免写这么长的 docker run 命令
+```
+alias dockbash='docker run -e HIST_FILE=/root/.bash_history \
+  -v=$HOME/.bash_history:/root/.bash_history
+```
+然而，这样就得用 dockbash 代替 docker run 了，这样不够好，不够 seamless；
+
+可以在 ~/.bashrc 中添加下面代码，就完美无缝了
+```
+function basher() {            # 定义函数 basher
+  if [[ $1 = 'run' ]]          # 如果首个参数是 run
+  then
+    shift                      # 移除第一个参数，也就是说去掉 run 参数，剩下的就是 docker run 的其他参数了
+    /usr/bin/docker run \      # 运行 docker run，注意使用绝对路径去找 docker
+      -e HIST_FILE=/root/.bash_history \
+      -v $HOME/.bash_history:/root/.bash_history "$@"        # 配置 History 目录，并指定 docker run 剩下的参数
+  else
+    /usr/bin/docker "$@"       # 否则，不移除首参数，正常运行原命令；仍然指定 docker 绝对路径
+  fi
+}
+alias docker=basher            # 最后，docker 设置为别名，每次调用 docker 命令就会调用 basher 函数，实现对 docker 的覆盖 
+```
+
+最后，推出当前 bash session，重进，更新 History 设置
+
+### Data-Only Container -- Docker 常见模式之一
+
+启动 Data-Only Container
+```
+$ docker run -v /shared-data --name dc busybox touch /shared-data/somefile
+```
+
+- -v /shared-data 由于没有指定 host 目录，故此它只是在容器中创建一个目录，以供 mount 使用。(相当于 Dockerfile 中指定 VOLUMN 指令的值)
+- touch /shared-data/somefile 在指定的目录中创建一个文件，然后命令就结束了，也就是说容器退出了(exit)；要注意，即使容器退出，Data-Only 容器仍然会起作用
+- 为了减少容器 size，使用了 busybox
+
+通过 --volumns-from 选项，启动 Data-Only Container 的引用容器，自动 mount 上 /share-data 目录
+```
+docker run -t -i --volumes-from dc busybox /bin/sh
+/ # ls /shared-data
+somefile
+```
+当所有 Data-Only 容器的引用容器都退出之后，Data-Only 容器才会清空 Volumn
+
+当存在多个引用容器，尽量使每个容器访问独立的文件或目录，以避免数据损失；也要注意避免名称冲突

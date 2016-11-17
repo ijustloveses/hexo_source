@@ -182,3 +182,45 @@ somefile
 当所有 Data-Only 容器的引用容器都退出之后，Data-Only 容器才会清空 Volumn
 
 当存在多个引用容器，尽量使每个容器访问独立的文件或目录，以避免数据损失；也要注意避免名称冲突
+
+### 通过 BitTorrent Sync 让 data container 的 volumn 能够自动和远程数据源同步
+
+远程数据源 host 启动一个 btsync 容器
+```
+[host1]$ docker run -d -p 8888:8888 -p 55555:55555 --name btsync ctlc/btsync
+[host1]$ docker logs btsync
+Starting btsync with secret: ALSVEUABQQ5ILRS2OQJKAOKCU5SIIP6A3            <-- key，供客户端连接使用
+.................
+```
+
+远程数据源 host 启动容器，link btsync 容器，用于控制和配置需要同步的数据源
+```
+[host1]$ docker run -i -t --volumes-from btsync ubuntu /bin/bash
+[host1]$ touch /data/shared_from_server_one          <--- 看到，默认的 mount 目录为 /data/，我们在目录中配置了一个新数据文件
+```
+
+类似的，本地 host 启动 btsync 客户端容器用于同步 btsync 服务器容器，再启动一个容器 link 客户端容器，用于读取和更改数据源
+```
+[host2]$ docker run -d --name btsync-client -p 8888:8888 -p 55555:55555 \
+ctlc/btsync ALSVEUABQQ5ILRS2OQJKAOKCU5SIIP6A3             <--- 这里指定了 key，用于连接 btsync 服务器
+
+[host2]$ docker run -i -t --volumes-from btsync-client ubuntu bash     <-- 启动容器 link btsync 客户端
+[host2]$ ls /data
+shared_from_server_one
+[host2]$ touch /data/shared_from_server_two         <--- 创建新文件
+[host2]$ ls /data
+shared_from_server_one shared_from_server_two
+```
+
+回到数据源 host，应该也能看到新建的 shared_from_server_two，从略
+
+简单的说，就是启动 btsync server & client 容器用于同步数据，然后 server & client 所在 host 各启动一个 app 容器，link 对应的 btsync 容器，操纵已经同步的数据
+
+本方法不能保证时间上的可靠性，可能需要等待一段时间以供同步所需，在安全性、可扩展性和性能上，都有一定的局限
+
+### 通过 sshfs 直接 mount 远程 volume
+
+和前面的技巧相比，这个更为直接，不必搞什么同步，直接 mount 远程数据源就好了
+
+本方法需要 root 权限，需要安装 FUSE (Linux’s “Filesystem in Userspace” kernel module)，后者可以根据是否存在 /dev/fuse 来判断
+

@@ -179,7 +179,7 @@ docker run -t -i --volumes-from dc busybox /bin/sh
 / # ls /shared-data
 somefile
 ```
-当所有 Data-Only 容器的引用容器都退出之后，Data-Only 容器才会清空 Volumn
+当所有 Data-Only 容器的引用容器都退出之后，Data-Only 容器才会清空 Volumn；然而，这一点并不能保证，经常会看到 /data/docker/volumes/ 目录 (或者其他指定的 docker volumes 目录) 中遗留着历史 volumes 文件，导致空间占满的现象；后面会看到如何清理空间
 
 当存在多个引用容器，尽量使每个容器访问独立的文件或目录，以避免数据损失；也要注意避免名称冲突
 

@@ -415,17 +415,17 @@ $ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock dockerinpractice/
 
 ### docker exec 的三种模式
 
-1. Basic mode -- Runs the command in the container synchronously on the command line
+- Basic mode -- Runs the command in the container synchronously on the command line
 ```
 $ docker exec sleeper echo "hello host from container"
 ```
 
-2. Daemon mode -- Runs the command in the background on the container
+- Daemon mode -- Runs the command in the background on the container
 ```
 $ docker exec -d sleeper find / -ctime 7 -name '*log' -exec rm {} \;
 ```
 
-3. Interactive mode -- Runs the command and allows the user to interact with it
+- Interactive mode -- Runs the command and allows the user to interact with it
 ```
 $ docker exec -i -t sleeper /bin/bash
 ```

@@ -223,9 +223,209 @@ shared_from_server_one shared_from_server_two
 
 本方法不能保证时间上的可靠性，可能需要等待一段时间以供同步所需，在安全性、可扩展性和性能上，都有一定的局限
 
-### 通过 sshfs 直接 mount 远程 volume
+### 通过 SSHFS 直接 mount 远程 volume
 
-和前面的技巧相比，这个更为直接，不必搞什么同步，直接 mount 远程数据源就好了
+前面的技巧是通过同步来把远程数据源更新到本地，再使用 Data-Only 容器来访问；那么能否直接 mount 远程数据源呢？答案是肯定的，通常有两种方法：NFS 或者 SSHFS。这里先介绍 SSHFS，下面一节介绍 NFS
 
-本方法需要 root 权限，需要安装 FUSE (Linux’s “Filesystem in Userspace” kernel module)，后者可以根据是否存在 /dev/fuse 来判断
+SSHFS 的方法需要 root 权限，并安装 FUSE (Linux’s “Filesystem in Userspace” kernel module)，后者可以根据是否存在 /dev/fuse 来判断。SSHFS + FUSE kernel 通过内部的 SSH 连接，提供了一套文件系统的标准接口，让你可以正常访问远程文件。由于直连远程文件，故此不会有 local container-level persistence，文件修改都发生在远程数据源。
 
+```
+$ docker run -t -i --privileged debian /bin/bash        <-- 如上面所说，需要 root 权限
+
+容器内部
+$ apt-get update && apt-get install sshfs        <-- 安装 sshfs
+$ sshfs user@host:/path/to/local/directory ${localpath}    <-- 把远程文件数据源 mount 到本地
+```
+搞定，远程数据源服务器只要有 ssh service 就可以了，基本不需要做额外配置
+
+当然，还可以把 ${localpath} 暴露出去，让本地容器成为 Data-Only 容器，供其他 app 容器 link。总之 ${localpath} 就和本地目录完全同等看待
+
+如果要 unmount，非常简单
+```
+fusermount -u ${localpath}
+```
+
+### 通过 NFS 直接 mount 远程 volume
+
+前面 SSHFS 的方法优点在于配置简单：远程数据源有 SSH 即可；本地需要预先安装 FUSE；本地容器内安装 SSHFS。
+
+NFS 方法的话，很多大些的公司内部都已经在使用 NFS 共享目录，那么可以配置一个容器来安装 NFS 客户端 mount 远程共享目录，同时作为 Data-Only 容器向其他 app 容器提供 volume 数据服务
+
+数据源 host 的配置 (比较简略，详细的需要查询 NFS 文档
+```
+# apt-get install nfs-kernel-server      <-- 安装 nfs 服务，注意是 root 权限
+# mkdir /export && chmod 777 /export && mount --bind /opt/test/db /export      <-- 把数据目录 mount 到 /export
+
+在 /etc/fstab file 文件中加入
+/opt/test/db /export none bind 0 0       <-- 重启后仍然保持 mount
+
+在 /etc/exports 文件中加入
+/export 127.0.0.1(ro,fsid=0,insecure,no_subtree_check,async)     <-- 配置 NFS
+这里限制为本地访问；现实中可以配置能够访问的 ip 段，或者 * 号不设置权限；还可以设置 ro 为 rw 等，配置不同的权限粒度
+
+# exportfs -a
+# service nfs-kernel-server restart
+```
+
+本地 Data-Only 容器的配置
+```
+# mount -t nfs 127.0.0.1:/export /mnt     <-- 本例中是本地配置的 NFS 服务，现实中改为真实 ip
+# docker run -ti --name nfs_client --privileged -v /mnt:/mnt busybox /bin/true      <-- 注意有 privileged 选项
+```
+
+本地其他 app 容器连接
+```
+# docker run -ti --volumes-from nfs_client debian /bin/bash
+```
+
+相比起来，服务器端的配置麻烦，而 Data-Only 容器的配置简单很多，因为 mount 过来后，就可以完全当作本地文件了
+
+### 容器使用 host 的资源
+
+```
+docker run -t -i \
+-v /var/run/docker.sock:/var/run/docker.sock \     <-- 容器内可以使用 docker 命令，充当 host 的 Docker Daemon
+-v /tmp/.X11-unix:/tmp/.X11-unix \                 <-- 容器内可以使用 host 的显示设备来访问 GUI 程序
+-e DISPLAY=$DISPLAY \
+--net=host --ipc=host \                            <-- 容器内可以使用本地网络和 ipc；--net 默认值为 bridge
+-v /opt/workspace:/home/dockerinpractice \
+dockerinpractice/docker-dev-tools-image
+```
+
+### 查看容器
+
+```
+docker inspect 0808ef13d450
+docker inspect --format '{{.NetworkSettings.IPAddress}}' 0808ef13d450
+docker ps -q | xargs docker inspect --format='{{.NetworkSettings.IPAddress}}' | xargs -l1 ping -c1
+```
+
+### 清理容器
+
+一句话：使用 docker stop 而不要用 docker kill
+
+具体的说，docker stop 和 unix 命令 kill 一样，都会给进程发送 TERM 信号；而 docker kill 则是发送 KILL 信号
+
+区别在于，进程收到 TERM 信号后可以做一些 cleanup 工作再退出；而 KILL 信号则强迫进程立即退出，可能导致问题
+
+### Docker Machine
+
+docker-machine 是一个工具，用来方便的创建和管理 docker host。它支持多种 docker host 环境，并提供统一的命令，方便用户的使用 (不同类型的 host 可用命令数会不同，比如 virtualbox 只有 3 个命令，而 openstack 则支持 17 个)
+
+比如创建 virtualbox 环境
+```
+$ docker-machine create --driver virtualbox host1        <-- 会创建 virtualbox + boot2docker.iso 镜像环境
+$ eval $(docker-machine env host1)           <-- 设置默认 docker 环境变量
+$ docker ps -a
+CONTAINER ID IMAGE COMMAND CREATED STATUS PORTS NAMES    <-- 还没有 docker 容器
+$ docker-machine ssh host1                   <-- 登录 host1
+```
+
+### Dockerfile 之 ADD
+
+```
+$ curl https://www.flamingspork.com/projects/libeatmydata/libeatmydata-105.tar.gz > my.tar.gz
+
+在 Dockerfile 中加入
+FROM debian
+RUN mkdir -p /opt/libeatmydata
+ADD my.tar.gz /opt/libeatmydata/
+RUN ls -lRt /opt/libeatmydata
+
+$ docker build --no-cache .
+.................
+Step 3 : RUN ls -lRt /opt/libeatmydata
+---> Running in e3283848ad65
+/opt/libeatmydata:
+total 4
+drwxr-xr-x 7 1000 1000 4096 Oct 29 23:02 libeatmydata-105       <-- 看到 tar.gz 文件自动解压了
+.................
+```
+Docker 会自动解压常见的标准压缩文件，包括并不仅限于 gz, bz2, xz, tar。但是，前提是你已经下载为本地文件了才行，否则不会自动解压，比如
+
+```
+FROM debian
+RUN mkdir -p /opt/libeatmydata
+ADD https://www.flamingspork.com/projects/libeatmydata/libeatmydata-105.tar.gz /opt/libeatmydata/
+RUN ls -lRt /opt/libeatmydata
+```
+这个就不会自动解压
+
+另外，注意到 ADD 的目的目录最后有一个斜杠 /，表示这是个目录；如果没有这个斜杠，那么 Docker 会把 /opt/libeatmydata 当作一个文件名，并把下载的文件保存为这个文件名
+
+如果你就不希望自动解压缩，那么使用 Dockerfile 的 COPY 命令即可
+
+### Docker build 过程中的 cache
+
+在重新 build Docker 镜像的时候，如果 Dockerfile 没有发生改变，那么 Docker 会默认使用 cache，不会真正重新执行命令
+
+如果不希望使用 cache，那么使用 --no-cache 选项，如 
+> docker build --no-cache .
+
+如果希望有一些更 fine-grained 的控制呢？比如希望从某个点开始不使用 cache? 可以通过修改 Dockerfile 的方式来实现
+
+Docker 的规则是，只要 Dockerfile 发生了字符级别的改变，那么就从改变发生的位置起，不再使用 cache。注意，字符级别的改变，意味着即使我们只是添加了一条 comment、一个空格，那么也会被认为 Dockerfile 改变，继而不再使用 cache
+
+### Running Docker without sudo
+
+通常用户在前台需要使用 sudo 来调用 docker 命令。如何避免使用 sudo 呢？加入 docker group
+
+> $ sudo addgroup -a username docker
+
+退出 shell 再进，就可以不使用 sudo 了
+
+### 清理 Containers 
+
+清理全部容器
+```
+$ docker ps -a -q | xargs --no-run-if-empty docker rm -f
+```
+--no-run-if-empty 选项表示如果前面的命令没有返回，那么就不运行后面的命令； -f 表示即使运行中的容器也 force remove
+
+清理 exited 的容器，既然已经 exited 了，就不需要 -f 了
+```
+docker ps -a -q --filter status=exited | xargs --no-run-if-empty docker rm
+```
+
+查看全部错误退出的容器
+```
+comm -3 \                  <-- comm 命令比较两个文件内容，-3 选项清除两个文件中都有的行
+<(docker ps -a -q --filter=status=exited | sort) \     <-- "<(command)" 会执行命令，并把结果看待为一个文件
+<(docker ps -a -q --filter=exited=0 | sort) | \        <-- 得到 exited 和 exited=0 的两个结果文件，作为 comm 参数
+xargs --no-run-if-empty docker inspect > error_containers    <-- 两个文件去除重复行后，剩下的就是 exited 非零的容器了
+```
+
+### Detaching containers without stopping them
+
+有时运行 docker 容器时，会遇到这种情况：如果退出 shell，那么容器也会跟着退出。如何 detach 而不会 stop 容器呢？
+
+> Press Ctrl-P and then Ctrl-Q to detach.
+
+### 使用 DockerUI 来管理 Docker Daemon
+
+```
+$ docker run -d -p 9000:9000 --privileged -v /var/run/docker.sock:/var/run/docker.sock dockerui/dockerui
+```
+
+### 生成 Docker images 间的依赖图
+
+```
+$ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock dockerinpractice/docker-image-graph > docker_images.png
+```
+
+### docker exec 的三种模式
+
+1. Basic mode -- Runs the command in the container synchronously on the command line
+```
+$ docker exec sleeper echo "hello host from container"
+```
+
+2. Daemon mode -- Runs the command in the background on the container
+```
+$ docker exec -d sleeper find / -ctime 7 -name '*log' -exec rm {} \;
+```
+
+3. Interactive mode -- Runs the command and allows the user to interact with it
+```
+$ docker exec -i -t sleeper /bin/bash
+```

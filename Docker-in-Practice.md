@@ -429,3 +429,104 @@ $ docker exec -d sleeper find / -ctime 7 -name '*log' -exec rm {} \;
 ```
 $ docker exec -i -t sleeper /bin/bash
 ```
+
+### ENTRYPOINT v.s. CMD
+
+例如一个脚本 clean_log 用于清理 N 天没有变动过的文件，天数 N 为传入参数
+```
+#!/bin/bash
+echo "Cleaning logs over $1 days old"
+find /log_dir -ctime "$1" -name '*log' -exec rm {} \;
+```
+
+容器化
+```
+FROM ubuntu:14.04
+ADD clean_log /usr/bin/clean_log
+RUN chmod +x /usr/bin/clean_log
+ENTRYPOINT ["/usr/bin/clean_log"]
+CMD ["7"]
+```
+这里面有几个重点需要注意：
+
+- 清理的目标目录 /log_dir，这个是在 docker run 的时候，通过 -v 选项动态 mount 即可
+- 当 Dockerfile 中同时具有 ENTRYPOINT 和 CMD 的时候，CMD 定义为 ENTRYPOINT 的默认参数
+- 当容器运行时，如果有 ENTRYPOINT，那么一定会被运行；此时如果 docker run 还提供了 command 参数，那么这个 command 不会执行，而是作为 ENTRYPOINT 的参数，替代 CMD 指令中的参数
+- 如果就不要 ENTRYPOINT，唯一的办法是使用 docker run 的 --entrypoint 选项
+- 无论 ENTRYPOINT 还是 CMD 都采用了 array 模式，而不是 shell 命令模式，这是因为后者会自动加入 /bin/bash -c 前缀，也许有时这是你需要的，但是大部分情况下可能会引起未知的结果，故此倾向于 array 模式
+
+比如：
+```
+docker build -t log-cleaner .
+docker run -v /var/log/myapplogs:/log_dir log-cleaner 365
+```
+这个 docker run 的 command 参数 365 成为了 ENTRYPOINT 的参数；故此如果把 365 改为 /bin/bash，是不会运行 bash 
+
+shell的，而是把 '/bin/bash' 作为 clean_log 的参数，这显然会报错 
+> find: invalid argument `-name' to `-ctime'
+
+### 保证镜像中的软件版本 (for debian based images)
+
+例如 nginx
+```
+$ apt-cache show nginx | grep ^Version:
+Version: 1.4.6-1ubuntu3
+```
+于是 Dockerfile 中可以指定版本
+```
+RUN apt-get -y install nginx=1.4.6-1ubuntu3
+```
+
+然而依赖库怎么办呢？
+```
+$ apt-cache --recurse depends nginx
+```
+通过 --recurse 参数迭代检测依赖软件的版本，然后一一指定在 Dockerfile 中
+
+似乎有些麻烦啊？作者提供了一个容器来简化
+```
+$ docker run -ti dockerinpractice/get-versions vim
+RUN apt-get install -y \
+vim=2:7.4.052-1ubuntu3 vim-common=2:7.4.052-1ubuntu3 \
+vim-runtime=2:7.4.052-1ubuntu3 libacl1:amd64=2.2.52-1 \
+..........
+```
+看到，docker run 中指定需要处理的软件，容器运行之后会输出 vim 自身及所有依赖的软件的全部版本
+
+### Dockerfile 中要替换多个文件中的文本？使用 perl -pie
+
+sed -i 也可以做类似的替换工作，那么为什么要使用 perl -pie 呢？
+
+- 天生可以作用于多个文件，一个文件即使处理失败也不会异常退出
+- 可以使用其他的符号代替通常的 '/' forward slashes 符号
+
+```
+$ perl -p -i -e 's/127\.0\.0\.1/0.0.0.0/g' *       <-- 通配符，处理多个文件
+
+$ perl -p -i -e 's/\/usr\/share\/www/\/var\/www\/html/g' /etc/apache2/*
+$ perl -p -i -e 's@/usr/share/www@/var/www/html/@g' /etc/apache2/*     <-- 这个和上面的一样，但是使用 @ 代替 /
+```
+
+### Flattening images
+
+有时 Dockerfile 中会涉及一些隐私信息或者重要信息文件不想泄漏，那么在 Dockerfile 的最后几步把这些文件删除，有用么？
+
+没有！因为 Docker 中镜像是分层的，这些文件在比较老的 layers 中依旧存在，只是在删除之后的 layers 中不存在而已
+
+可以通过 docker history 命令查看 layers 信息，然后对老的 layers 调用 docker run 导出隐私文件
+```
+$ docker history mysecret
+..........
+$ docker run 5b376ff3d7cd cat /tmp/secret_key
+My Big Secret
+```
+
+如何解决这个问题？
+```
+$ docker run -d mysecret /bin/true
+28cde380f0195b24b33e19e132e81a4f58d2f055a42fa8406e755b2ef283630f
+$ docker export 28cde380f | docker import - mysecret     <--- 先 export 在 import，去掉 layers 信息
+$ docker history mysecret
+IMAGE CREATED CREATED BY SIZE             <--- 看到最后只有一个 layer了
+fdbeae08751b 13 seconds ago 85.01 MB
+```

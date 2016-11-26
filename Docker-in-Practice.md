@@ -578,3 +578,57 @@ C、Go 等编译语言可以制作 statically linked binary，比如
 
 保证安装过程不提示输入
 
+### 利用 DockerHub 进行自动构建镜像
+
+1. 创建 Github (BitBucket) 项目，然后 clone 到本地。添加 Dockerfile 文件，提交到 Github
+2. 创建 DockerHub 帐号，登录，把 DockerHub Repo 和 Git Repo 进行绑定，等待 DockerHub 自动构建镜像完毕
+3. 之后，当再次更改 Dockerfile，DockerHub 都会自动检测到更新，并重新自动 build 镜像
+
+和 Dockerfile 一起，可能还需要一个 bash_extra，配合 DockerHub 做一些配置工作
+
+### 针对 IO-intensive 的镜像通过 eatmydata 库来提高测试、开发环境的持续集成速度
+
+应用把数据写入文件通常有两个方法：1. 把写操作告诉 OS，后者会 cahe 数据直到写入完成；2. 强制系统调用写文件
+
+eatmydata 库会让系统调用直接返回而不真正写入数据，在加快速度的同时，也会引起数据的 inconsistent，故此只用于测试或者开发环境
+
+方法是在镜像 (Dockerfile) 中安装 libeatmydata，然后在 docker run 的时候，在真正的命令前面加上 eatmydata
+> docker run -d mybuildautomation eatmydata /run_tests.sh
+
+### 利用 Squid 搭建 Package Cache 来加速构建过程
+
+容器运行的时候如果要安装 package，会带来很大的网络开销；利用 Squid Proxy 缓存住已经下载的 package，加速构建速度
+
+Squid Proxy 安装在 Host 中，然后各容器直接向 Squid Proxy 下载 package，由后者代理下载或者下发已缓存的 package
+
+Debian
+```
+# Host 安装 squid
+sudo apt-get install squid-deb-proxy
+
+# 容器对应的镜像 Dockerfile 中设置 squid 代理
+FROM debian
+RUN apt-get update -y && apt-get install net-tools                 # 安装 net-tools 以使用 route
+RUN echo "Acquire::http::Proxy \"http://$( \
+route -n | awk '/^0.0.0.0/ {print $2}' \                           # 使用 route + awk 获取 Host ip 地址
+):8000\";"  > /etc/apt/apt.conf.d/30proxy                          # 把 HostIp:8000 配置到 apt 的代理配置文件中
+RUN echo "Acquire::http::Proxy::ppa.launchpad.net DIRECT;" >> /etc/apt/apt.conf.d/30proxy
+CMD ["/bin/bash"]
+```
+
+CentOS
+```
+# 安装后需要调整 /etc/squid/squid.conf 文件，增大 cache 空间
+cache_dir ufs /var/spool/ squid 10000 16 256.
+
+# Dockerfile 也是类似的
+FROM centos:centos7
+RUN yum update -y && yum install -y net-tools
+RUN echo "proxy=http://$(route -n | awk '/^0.0.0.0/ {print $2}'):3128" >> /etc/yum.conf
+RUN sed -i 's/^mirrorlist/#mirrorlist/' /etc/yum.repos.d/CentOS-Base.repo   # 避免使用 mirror
+RUN sed -i 's/^#baseurl/baseurl/' /etc/yum.repos.d/CentOS-Base.repo         # 只使用 baseurl
+RUN rm -f /etc/yum/pluginconf.d/fastestmirror.conf                          # 不再需要 fastestmirror
+RUN yum update -y                                                           # 更新，保证上面生效
+CMD ["/bin/bash"]
+```
+前面都是说把 Squid 安装在 Host；可以参考[这篇文档](https://github.com/jpetazzo/squid-in-a-can) 来把 Squid 安装在容器中

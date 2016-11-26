@@ -534,22 +534,12 @@ fdbeae08751b 13 seconds ago 85.01 MB
 ### 让镜像更小之 Dockerfile 篇
 
 - FROM 指令选择比较小的 base 镜像，虽然这意味着会少一些软件，只要保证需要的软件都在即可；甚至使用 BusyBox 或 Alpine
-- 镜像构建完成之前，删除不再需要的中间文件或者源软件安装包。需要指出，这些删除也需要使用 RUN 指令调用，而由于 Docker 的 layer 机制，每个 RUN 
+- 镜像构建完成之前，删除不再需要的中间文件或者源软件安装包。需要指出，这些删除也需要使用 RUN 指令调用，而由于 Docker 的 layer 机制，每个 RUN 指令都会在最终的镜像上添加一个 copy-on-write layer，这会间接的增大最终镜像，故此，可能最终镜像看起来并没有减少
+- 紧跟前一条，显然我们需要减少 RUN 指令的个数。一种方法是把所需要的命令都放到同一个 RUN 指令中；另一种方法是把命令写到一个 shell 脚本中，然后在 Dockerfile 中 RUN 这个脚本即可
 
-指令都会在最终的镜像上添加一个 copy-on-write layer，这会间接的增大最终镜像，故此，可能最终镜像看起来并没有减少
-- 紧跟前一条，显然我们需要减少 RUN 指令的个数。一种方法是把所需要的命令都放到同一个 RUN 指令中；另一种方法是把命令写到一个 shell 脚本中，然
+Side Note 1. 把全部命令集中到同一个 RUN 指令中的方法，在优化了镜像空间的同时，牺牲了 Docker layer 带来的 build flexibility 以及 build time (layer cache)
 
-后在 Dockerfile 中 RUN 这个脚本即可
-
-Side Note 1. 把全部命令集中到同一个 RUN 指令中的方法，在优化了镜像空间的同时，牺牲了 Docker layer 带来的 build flexibility 以及 build time 
-
-(layer cache)
-
-Side Note 2. 什么是 copy-on-write? 这是 Docker 最小化资源使用的重要方法，当多个容器都要读取同一个文件时，他们都会去包含该文件的 topmost 
-
-layer 去找，也就是说，读取的是同一个文件，这就避免的把这个文件 copy 到每个容器中，极大的减小了容器的体积。只有当某个容器需要修改文件时，该文
-
-件才被 copy 到该容器中。
+Side Note 2. 什么是 copy-on-write? 这是 Docker 最小化资源使用的重要方法，当多个容器都要读取同一个文件时，他们都会去包含该文件的 topmost layer 去找，也就是说，读取的是同一个文件，这就避免的把这个文件 copy 到每个容器中，极大的减小了容器的体积。只有当某个容器需要修改文件时，该文件才被 copy 到该容器中。
 
 ### 让镜像更小之 Tricks 篇
 
@@ -571,7 +561,6 @@ find /var | grep '\.log$' | xargs rm -v  来删除 logs
 nifty 工具可以监控哪些文件被容器引用，然后清除掉它们；这个方法有很大风险，尽量不要应用到生产环境；但是能让我们更好的了解系统
 ```
 $ apt-get update && apt-get install -y inotify-tools
-
 $ inotifywait -r -d -o /tmp/inotifywaitout.txt /bin /etc /lib /sbin /var
 ```
 -r 递归查看子目录； -o 输出文件

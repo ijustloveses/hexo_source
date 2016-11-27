@@ -632,3 +632,71 @@ RUN yum update -y                                                           # �
 CMD ["/bin/bash"]
 ```
 前面都是说把 Squid 安装在 Host；可以参考[这篇文档](https://github.com/jpetazzo/squid-in-a-can) 来把 Squid 安装在容器中
+
+### 容器获取宿主机的 IP
+
+当然，这个 ip 并不是外部看到的宿主机 ip，而是 from the point of view of the container.
+```
+ip route | grep "default via" |awk '{print $3}'
+```
+
+上一节中，我们还看到类似的指令
+```
+# install net-tools first
+route -n |awk '/^0.0.0.0/ {print $2}'
+```
+
+通过这种方法，容器可以访问宿主机的服务
+
+### 在不同 registry 之间转移 docker 镜像
+
+- 如果有一个环境能同时访问两个不同的 registry，那么打个 tag 再 push 即可
+```
+$ docker pull $OLDREG/$MYIMAGE
+$ docker tag -f $OLDREG/$MYIMAGE $NEWREG/$MYIMAGE
+$ docker push $NEWREG/$MYIMAGE
+$ docker rmi $(docker images -q --filter dangling=true)
+```
+
+- 同上述情况，但是传递多个相似的镜像
+
+Docker 镜像有 layer 机制，docker push/pull 只会对共享的 layers 传输一次，这对传输共享很多 layers 的镜像很有利
+
+但是例如 ubuntu:14.04.1 和 ubuntu:14.04.2，完全没有共享任何 layers，但其实镜像中的文件非常相似；这种情况下，[dbup](https://github.com/docker-in-practice/dbup) 会更有帮助。它会开辟一个存储空间，检测镜像文件中的 duplication，对这些重复项只保存一次；也就是说，dbup 实现了一套和 docker 并行的，也是基于 deduplication 的存储。
+
+以 ubuntu:14.04.1 和 ubuntu:14.04.2 为例。首先在两个 registry 上都创建 dbup 环境
+```
+$ mkdir bup_pool    <-- 存储空间
+$ alias dbup="docker run --rm \
+-v $(pwd)/bup_pool:/pool -v /var/run/docker.sock:/var/run/docker.sock \
+dockerinpractice/dbup"
+```
+在源 registry
+```
+$ docker pull ubuntu:14.04.1
+$ docker pull ubuntu:14.04.2
+$ dbup save ubuntu:14.04.1
+$ dbup save ubuntu:14.04.2
+```
+rsync bup_pool 目录到目的 registry，然后执行
+```
+$ dbup load ubuntu:14.04.1
+$ dbup load ubuntu:14.04.2
+$ docker push ubuntu:14.04.1
+$ docker push ubuntu:14.04.2
+```
+
+这里 docker push / pull 的过程，没有因为 layer 机制减少数据量 (因为没有共享的 layers)；而在 dbup save /load 的过程中减少了数据量，更重要的在 rsync 网络传输的时候减少了数据量，因为 dbup 进行了 deduplication 的存储
+
+- Docker 镜像保存为 TAR 文件传输
+	+ export 把容器导出为 TAR，丢掉 layers 信息
+	+ import 把 TAR 导入为镜像，没有 layers 信息
+	+ save 把镜像保存为 TAR，保留 layers 信息
+	+ load 把 TAR 加载为镜像，带着 layers 信息
+
+例如：
+```
+$ docker save debian:7.3 | ssh example.com docker import -      <-- 最后面的"-" dash 符号表示从标准输入导入
+$ docker save debian:7.3 | ssh example.com docker load          <-- load 不需要 dash 
+```
+

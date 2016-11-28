@@ -701,3 +701,50 @@ $ docker save debian:7.3 | ssh example.com docker import -      <-- 最后面的
 $ docker save debian:7.3 | ssh example.com docker load          <-- load 不需要 dash 
 ```
 
+### SQLite and Proxy setup with docker compose and socat
+
+首先创建一个 SQLite 和 Proxy 容器共享的镜像 Dockerfile
+```
+FROM ubuntu:14.04
+RUN apt-get update && apt-get -y install rlwrap sqlite3 socat
+EXPOSE 12345
+```
+其中 rlwrap 是用于美化 telnet 的命令行输入输出的，和整个构架无关
+
+ok，现在可以实现 docker-compose.yml 文件了
+```
+server:
+  command: socat TCP-L:12345,fork,reuseaddr EXEC:'sqlite3 /opt/sqlite/db',pty
+  build: .
+  volumes:
+    - /tmp/sqlitedbs/test:/opt/sqlite/db
+
+proxy:
+  command: socat TCP-L:12346,fork,reuseaddr TCP:sqliteserver:12345
+  build: .
+  links:
+    - server:sqliteserver
+  ports:
+    - 12346:12346
+```
+要点如下：
+
+- server 和 proxy 都使用本目录下的 Dockerfile build 镜像
+- server 容器监听 12345 端口的消息，收到消息后执行 sqlite3；
+- proxy 容器 link 上 server 容器，监听 12346 端口，收到消息转发到 server 容器的 12345 端口 (继而执行 sqlite)
+- server 和 proxy 的 TCP 参数 “fork,reuseaddr” 表示支持多用户访问，也即所谓多路复用机制 multiplexing
+- server 通过 volumes mount 了 host 宿主的 /temp/sqlitedbs/ 目录，这样可以在宿主上创建 SQLite 数据库，由 server 容器管理
+
+Proxy 模式优点是隐藏了 SQLite 服务，让真正的服务和网络连接的职责分离
+
+客户端访问类似下面：
+```
+$ rlwrap telnet localhost 12346
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+SQLite version 3.7.17
+Enter ".help" for instructions
+sqlite> 
+```
+

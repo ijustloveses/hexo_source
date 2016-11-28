@@ -615,6 +615,7 @@ route -n | awk '/^0.0.0.0/ {print $2}' \                           # 使用 rout
 RUN echo "Acquire::http::Proxy::ppa.launchpad.net DIRECT;" >> /etc/apt/apt.conf.d/30proxy
 CMD ["/bin/bash"]
 ```
+注意，这个 Host ip 是容器所处网络中的宿主机的 ip，而不是外部 ip；容器可以通过这个内网 ip，访问到宿主机上的 squid 服务
 
 CentOS
 ```
@@ -635,7 +636,7 @@ CMD ["/bin/bash"]
 
 ### 容器获取宿主机的 IP
 
-当然，这个 ip 并不是外部看到的宿主机 ip，而是 from the point of view of the container.
+当然，这个 ip 并不是外部看到的宿主机 ip，而是 from the point of view of the container，类似 172.27.0.1
 ```
 ip route | grep "default via" |awk '{print $3}'
 ```
@@ -646,7 +647,7 @@ ip route | grep "default via" |awk '{print $3}'
 route -n |awk '/^0.0.0.0/ {print $2}'
 ```
 
-通过这种方法，容器可以访问宿主机的服务
+其实，这个宿主机的 IP 就是容器所处的 bridge 网络的网关，通过宿主机的 IP，容器可以访问宿主机的服务
 
 ### 在不同 registry 之间转移 docker 镜像
 

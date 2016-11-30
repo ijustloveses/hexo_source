@@ -121,3 +121,48 @@ $ docker run -it --dns 172.17.42.1 ubuntu:14.04.2 bash     # 启动新容器，d
 - - --dns=172.17.42.1 指定新启动的容器 dns 指向 172.17.42.1，这样 DNS 请求就会通过端口映射转发到 Resolvable 的 53 端口
 
 
+### 使用 Weave 实现跨宿主机的容器间通讯
+
+单宿主机上的容器都在 docker0 bridge 局域网中，上一节使用 Resolvable 在这个局域网中创建 DNS 服务，实现容器间相互通讯。
+
+多宿主机上的容器显然各自在其宿主机的局域网中，无法互联，也无法使用 Resolvable，那么有办法实现相互通讯么？
+
+答案是肯定的，使用 Weave 搭建一条虚拟局域网(Weave network)，并实现容器间使用 ip 相互通讯。
+
+[Weave](https://github.com/zettio/weave) 是一个二进制文件，要在每个需要互联的宿主机上安装一份
+```
+$ sudo wget -O /usr/local/bin/weave https://github.com/zettio/weave/releases/download/latest_release/weave
+$ sudo chmod +x /usr/local/bin/weave
+```
+
+下面，比如要让 host1 & host2 两个宿主机的容器间互联，这两个宿主机本身必须是可以通过 ip 互联的
+
+在宿主机 host1 上执行
+```
+host1$ curl http://ip-addr.es       # 通过 curl ip-addr.es 来返回宿主机的 ip 地址
+1.2.3.4
+host1$ sudo weave launch            # 使用 sudo 启动 Weave 服务
+host1$ C=$(sudo weave run 10.0.1.1/24 -t -i ubuntu)      # 通过 weave 而不是通过 docker run 来启动容器，并设置虚拟局
+
+域网上容器的 ip
+```
+
+在宿主机 host2 上执行
+```
+host2$ curl http://ip-addr.es       # 同样，获取 host2 的 ip
+1.2.3.5
+host2# sudo weave launch 1.2.3.4    # sudo 启动 Weave 并指定 host1 ip，以 attach 到 host1 的 Weave 服务所创建的虚拟
+
+局域网中
+host2# C=$(sudo weave run 10.0.1.2/24 -t -i ubuntu)      # 同样通过 weave 启动容器，并设置虚拟局域网内容器的 ip
+```
+
+OK，现在两个容器可以相互通讯了，比如在 host1 上，
+```
+host1# docker attach $C
+root@28841bd02eff:/# ping -c 1 -q 10.0.1.2
+PING 10.0.1.2 (10.0.1.2): 48 data bytes
+--- 10.0.1.2 ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss    # 成功 ping 到 host2 上的容器
+```
+

@@ -16,9 +16,9 @@ Etcd 是一个分布式的 key-value 存储工具，通常用于存储配置信�
 
 ### Etcd Cluster and Etcd proxy setup
 
-首先需要获取外网 ip，以供其他应用访问
+首先需要获取宿主机对外的真实 ip，以供访问 Etcd 集群的应用访问；外部应用甚至可能不在宿主机上，故此需要使用外部 ip
 ```
-$ ip addr | grep 'inet ' | grep -v 'lo$\|docker0$'         <-- 过滤掉 lo 和 docker 网络，得到真实 ip
+$ ip addr | grep 'inet ' | grep -v 'lo$\|docker0$'         <-- 过滤掉 lo 和 docker 网络，得到真实 ip 10.194.12.221
 inet 10.194.12.221/20 brd 10.194.15.255 scope global eth0
 ```
 
@@ -29,7 +29,7 @@ $ docker pull $IMG
 $ HTTPIP=http://10.194.12.221         <-- 外网 ip
 $ CLUSTER="etcd0=$HTTPIP:2380,etcd1=$HTTPIP:2480,etcd2=$HTTPIP:2580"   <-- 使用外网 ip 定义集群；由于容器在同一个 host 上，故此分配了不同的 port 以避免冲突
 
-$ ARGS=
+$ ARGS=         <-- ARGS 不是 docker run 参数，而是 etcd 容器 entrypoint 的参数，故此可以使用宿主真实 ip，是配置 Etcd 集群所用
 $ ARGS="$ARGS -listen-client-urls http://0.0.0.0:2379"    <-- 用于监听和处理 client 的请求
 $ ARGS="$ARGS -listen-peer-urls http://0.0.0.0:2380"      <-- 用于和集群内的其他节点相互访问，和集群定义部分一致
 $ ARGS="$ARGS -initial-cluster-state new"
@@ -48,7 +48,9 @@ $ARGS -name etcd2 -advertise-client-urls $HTTPIP:2579 \
 -initial-advertise-peer-urls $HTTPIP:2580
 ```
 
-!!!! TODO  docker run 的参数中指定的宿主外部 ip 以及映射的端口能被 docker run 正常的识别么？还是说 etcd 不需要识别，只要配置了就行？然而，至少 peer 级别的端口是需要相互访问的啊？那么说一定可以连接到宿主的外部 ip 的喽？？
+看到，3个 Etcd 节点容器内部使用的都是标准的 2379 2380 端口，而在宿主机上映射到不同的外部端口，这些外部的端口才是使用 Etcd 集群的应用所看到和访问的地址，是 Etcd 集群的配置
+
+docker run 启动 Etcd 节点容器本身不需要读取这些参数，故此也不会去识别宿主机的外部 ip
 
 ### 宿主中进行测试
 
@@ -83,10 +85,12 @@ $ docker start etcd2
 前面看到了要 put 数据等操作，需要知道 etcd 集群的内部服务器 ip 和端口，这很不好；安装 Etcd proxy 来解决
 ```
 $ docker run -d -p 8080:8080 --restart always --name etcd-proxy $IMG \
--proxy on -listen-client-urls http://0.0.0.0:8080 -initial-cluster $CLUSTER 
+-proxy on -listen-client-urls http://0.0.0.0:8080 -initial-cluster $CLUSTER      <-- 读取 Etcd 集群配置，然后在 8080 上开代理
 ```
 
-这样，只对这个 proxy:8080 访问就可以了，测试：
+由于在启动时传入了 Etcd 集群配置，故此原则上不需要在宿主机上，其他机器只要能够访问宿主机，都可以创建 Etcd Proxy
+
+当然，本例中是在宿主机上启动的 Proxy，这样对宿主机 $HTTPIP:8080 访问就可以了。也就是说，下面的测试也可以不在宿主机上进行，只要能连接 HTTPIP 即可：
 ```
 $ curl -L $HTTPIP:8080/v2/keys/mykey2 -XPUT -d value="t"
 {"action":"set","node": {"key":"/mykey2","value":"t", "modifiedIndex":12,"createdIndex":12}}
@@ -118,6 +122,8 @@ root@8df11eaae71e:/# wget -q -O- http://etcd:8080/v2/keys/mykey3
 ```
 也就是说，应用服务器通过 link，把 Etcd proxy 服务器作为 Ambassador (proxy) 来访问背后的 Etcd 集群
 
+由于是 link 的方式，故此访问 Etcd 的容器必须和 Etcd Proxy 容器在一个机器上才行
+
 ### 还可以使用 etcdctl Docker 镜像来访问 Etcd proxy
 
 前面，无论是直接访问 Etcd proxy 还是容器内通过 link 访问，都采用了 http 的方式，比较麻烦，命令和参数复杂
@@ -134,6 +140,8 @@ value
 $ etcdctl ls
 /test
 ```
+
+由于参数中指定了 Etcd Proxy 的地址，故此原则上 EtcdCtl 不需要和 Etcd Proxy 在同一台机器上，更不需要和 Etcd 集群宿主机在同一台机器上
 
 Part II. Zero-downtime Switchover with Confd
 ==================================================
@@ -165,7 +173,7 @@ $ curl -s localhost:49156 | tail
 ```
 $ IMG=dockerinpractice/confd-nginx
 $ docker pull $IMG
-$ docker run -d --name nginx -p 8000:80 $IMG $HTTPIP:8080      <-- nginx 监听的端口为 80，映射到宿主的 8000
+$ docker run -d --name nginx -p 8000:80 $IMG $HTTPIP:8080      <-- nginx 监听的端口为 80，映射到宿主的 8000，同时指定 Etcd Proxy 地址
 ```
 
 不过此时还没有给 nginx 配置它所要中转的 http 服务，这个配置是 confd-nginx 这个镜像内部固化好的，配置方法如下：
@@ -231,9 +239,9 @@ $ docker rm -f py1
 ### 整个流程的小结
 
 - 用户访问 $HTTPIP:8000，这个端口映射到 confd-nginx 容器的 80 端口
-- - confd-nginx 容器中，confd 配置为读取 etcd 集群的 /app/upstream 的最新服务地址，然后把用户请求转发到这个地址
-- - 这个地址配置为宿主机的一个端口，如 10.194.12.221:49161；而 49161 端口映射到 python http server 容器的 80 端口
-- - 用户的请求发送到 python http server，顺利返回结果
+- confd-nginx 容器中，confd 配置为读取 etcd 集群的 /app/upstream 的最新服务地址，然后把用户请求转发到这个地址
+- 这个地址配置为宿主机的一个端口，如 10.194.12.221:49161；而 49161 端口映射到 python http server 容器的 80 端口
+- 用户的请求发送到 python http server，顺利返回结果
 
 看到，confd-nginx 容器和 python http server 容器之间没有直接关联，是通过 etcd 集群的配置，以及宿主机上映射的端口来发生间接的关联
 

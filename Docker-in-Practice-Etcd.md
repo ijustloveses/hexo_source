@@ -1,6 +1,6 @@
 ---
 title: Docker in Practice - Etcd
-date: TODO
+date: 2016-11-30 18:14:30 
 tags: [Docker,笔记,Etcd,Orchestration,Deploy,ServiceDiscovery]
 categories: Docker
 ---

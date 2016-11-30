@@ -142,18 +142,14 @@ $ sudo chmod +x /usr/local/bin/weave
 host1$ curl http://ip-addr.es       # 通过 curl ip-addr.es 来返回宿主机的 ip 地址
 1.2.3.4
 host1$ sudo weave launch            # 使用 sudo 启动 Weave 服务
-host1$ C=$(sudo weave run 10.0.1.1/24 -t -i ubuntu)      # 通过 weave 而不是通过 docker run 来启动容器，并设置虚拟局
-
-域网上容器的 ip
+host1$ C=$(sudo weave run 10.0.1.1/24 -t -i ubuntu)      # 通过 weave 而不是通过 docker run 来启动容器，并设置虚拟局域网上容器的 ip
 ```
 
 在宿主机 host2 上执行
 ```
 host2$ curl http://ip-addr.es       # 同样，获取 host2 的 ip
 1.2.3.5
-host2# sudo weave launch 1.2.3.4    # sudo 启动 Weave 并指定 host1 ip，以 attach 到 host1 的 Weave 服务所创建的虚拟
-
-局域网中
+host2# sudo weave launch 1.2.3.4    # sudo 启动 Weave 并指定 host1 ip，以 attach 到 host1 的 Weave 服务所创建的虚拟局域网中
 host2# C=$(sudo weave run 10.0.1.2/24 -t -i ubuntu)      # 同样通过 weave 启动容器，并设置虚拟局域网内容器的 ip
 ```
 

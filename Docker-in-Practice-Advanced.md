@@ -9,8 +9,8 @@ Some advanced topics on 《Manning Docker in Practice》
 
 <!-- more -->
 
-Docker Advanced Topics
-=======================
+Docker Network
+================
 
 ### docker 虚拟网络
 
@@ -161,4 +161,86 @@ PING 10.0.1.2 (10.0.1.2): 48 data bytes
 --- 10.0.1.2 ping statistics ---
 1 packets transmitted, 1 packets received, 0% packet loss    # 成功 ping 到 host2 上的容器
 ```
+
+
+Docker Orchestration
+=======================
+
+### 单宿主机上使用 Systemd 进行编排
+
+Docker 本身提供 docker-compose 工具，可以定义单宿主机上容器的配置以及协调容器间的依赖关系。这个工具在 Docker 容器级别上非常好用，但是无法对宿主机非 Docker 领域的资源做管理。
+
+Systemd 有些类似 Supervisord，是对宿主机服务级别的管理工具，可以在更高的层面上，对容器进行管理和编排。下面以 SQLite + socat 代理为例，看看 systemd 和 docker-compose 的区别
+
+Systemd 使用 ini 格式的配置文件，下面先看看 SQLite server 容器的配置：/etc/systemd/system/sqliteserver.service
+```
+[Unit]
+Description=SQLite Docker Server
+After=docker.service        # 依赖 docker 服务
+Requires=docker.service
+
+[Service]
+Restart=always              # 自动重启
+ExecStartPre=-/bin/touch /tmp/sqlitedbs/test      # 启动前准备好宿主机上的数据库目录
+ExecStartPre=-/bin/touch /tmp/sqlitedbs/live
+ExecStartPre=/bin/bash -c '/usr/bin/docker kill sqliteserver || /bin/true'    # 启动前先清理历史服务
+ExecStartPre=/bin/bash -c '/usr/bin/docker rm -f sqliteserver || /bin/true'
+ExecStartPre=/usr/bin/docker pull dockerinpractice/docker-compose-sqlite      # 启动前先 pull 镜像
+ExecStart=/usr/bin/docker run --name sqliteserver \         # 启动命令，就是一条 docker run
+-v /tmp/sqlitedbs/test:/opt/sqlite/db \
+dockerinpractice/docker-compose-sqlite /bin/bash -c \
+'socat TCP-L:12345,fork,reuseaddr \
+EXEC:"sqlite3 /opt/sqlite/db",pty'
+ExecStop=/usr/bin/docker rm -f sqliteserver                 # 服务终止命令，删除容器
+
+[Install]
+WantedBy=multi-user.target                        # 系统启动后的服务自动运行命令，后面会看到这条命令如何生效
+```
+
+然后是 socat 代理容器的配置：/etc/systemd/system/sqliteproxy.service
+```
+[Unit]
+Description=SQLite Docker Proxy
+After=sqliteserver.service           # 依赖 sqliteserver 服务，故此间接依赖 docker 服务
+Requires=sqliteserver.service
+
+[Service]
+Restart=always                       # 自动重启
+ExecStartPre=/bin/bash -c '/usr/bin/docker kill sqliteproxy || /bin/true'    # 类似的启动前清理历史及 pull 镜像
+ExecStartPre=/bin/bash -c '/usr/bin/docker rm -f sqliteproxy || /bin/true'
+ExecStartPre=/usr/bin/docker pull dockerinpractice/docker-compose-sqlite
+ExecStart=/usr/bin/docker run --name sqliteproxy \                           # 启动命令
+-p 12346:12346 --link sqliteserver:sqliteserver \
+dockerinpractice/docker-compose-sqlite /bin/bash \
+-c 'socat TCP-L:12346,fork,reuseaddr TCP:sqliteserver:12345'
+ExecStop=/usr/bin/docker rm -f sqliteproxy                                   # 服务终止清理命令
+
+[Install]
+WantedBy=multi-user.target                                                   # 系统启动后服务自动运行设置
+```
+
+接下来服务 enable 以及启动后自动运行的配置
+```
+$ sudo systemctl enable /etc/systemd/system/sqliteserver.service
+ln -s '/etc/systemd/system/sqliteserver.service' \
+'/etc/systemd/system/multi-user.target.wants/sqliteserver.service'
+
+$ sudo systemctl enable /etc/systemd/system/sqliteproxy.service
+ln -s '/etc/systemd/system/sqliteproxy.service' \
+'/etc/systemd/system/multi-user.target.wants/sqliteproxy.service'
+```
+把容器服务 link 到 /etc/systemd/system/multi-user.target.wants/，系统重启进入 multi-user stage 时就会自动启动服务
+
+运行服务
+```
+$ sudo systemctl start sqliteproxy
+```
+由于 Systemd 配置了依赖关系，故此这里只要运行 sqliteproxy，那么它所依赖的服务都会自动启动
+
+到这里，我们看看 Systemd 和 docker-compose，它们的共同点是都定义了容器间的依赖关系，但是他们的区别是显而易见的
+
+- docker-compose 着眼于容器自身的配置，比如 link、volume、entrypoint 等等；而这些对于 systemd 来说，只是一条启动命令而已，由使用者自己搞定
+- Systemd 则着眼于容器和宿主机之间的联系，比如准备运行环境、启动前中后期宿主所要担负的职责等，是从宿主的角度来编排和配置容器的运行
+
+这样看来，我们可以在 systemd 的启动命令部分，直接使用 docker-compose，这样就不需要定义两个服务了，只要一个服务启动两个容器即可
 

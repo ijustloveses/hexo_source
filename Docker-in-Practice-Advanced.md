@@ -244,3 +244,92 @@ $ sudo systemctl start sqliteproxy
 
 这样看来，我们可以在 systemd 的启动命令部分，直接使用 docker-compose，这样就不需要定义两个服务了，只要一个服务启动两个容器即可
 
+### 多宿主机上使用 Helios 手动 Docker 编排
+
+Helios 是 Spotify 公司开发的 Docker 多宿主编排工具，以手动的方式控制容器具体部署到哪个宿主。出于简单考虑，本部分的例子仍然在单宿主机上运行，不过会指出如何扩展到多宿主的情况。
+
+Helios 的架构如 ![下图](./helios.png)
+
+具体来说，Helios 由 Masters / ZooKeeper / Agents 组成；Masters 本身也可以是集群，避免单点故障造成可用性损失。Masters 和 Agents 都注册在 Zookeeper 上，由 ZooKeeper 维护集群节点以及部署任务信息；用户向 Master 发送部署 jobs，然后手动指定 jobs 所部属的 Agents 节点。
+
+部署ZooKeeper，注意 ZooKeeper 本身也可以是集群，而本例中只是部署在一个节点而已
+```
+$ docker run --name zookeeper -d jplock/zookeeper:3.4.6
+$ docker inspect -f '{{.NetworkSettings.IPAddress}}' zookeeper
+172.17.0.9                 # 记住 ZooKeeper 所部署的位置
+```
+
+部署 Helios Master，这里部署在同一个宿主的另一个容器上
+```
+$ IMG=dockerinpractice/docker-helios
+$ docker run -d --name hmaster $IMG helios-master --zk 172.17.0.9         # helios-master 命令，指定 ZooKeeper 的位置
+$ docker inspect -f '{{.NetworkSettings.IPAddress}}' hmaster
+172.17.0.11                    # 记住 Master 的位置
+```
+
+通过 ZooKeeper Client 查看 ZK 集群中的配置信息
+```
+$ docker exec -it zookeeper bin/zkCli.sh
+[zk: localhost:2181(CONNECTED) 0] ls /
+[history, config, status, zookeeper]             # 看到，除了默认的 zookeeper 目录之外，Helios Master 创建了另外 3 个目录
+[zk: localhost:2181(CONNECTED) 2] ls /status/masters
+[896bc963d899]                                   # /status/masters 记录了 Master 的容器 id
+[zk: localhost:2181(CONNECTED) 3] ls /status/hosts
+[]                                               # 还没有 Agent Hosts
+```
+
+部署 Helios Agents，同样部署在同一个宿主上
+```
+$ docker run -v /var/run/docker.sock:/var/run/docker.sock -d --name hagent \       # 由于 Agents 要负责启动容器，故此，必须能调用 Docker
+dockerinpractice/docker-helios helios-agent --zk 172.17.0.9                        # 同样要指定 ZooKeeper 位置，由 ZK 统一管理
+$ docker inspect -f '{{.NetworkSettings.IPAddress}}' hagent
+172.17.0.12                                                                        # 记住 Agent 的位置
+```
+
+再次查看 ZK 中的配置
+```
+[zk: localhost:2181(CONNECTED) 4] ls /status/hosts
+[5a4abcb27107]                       # 已经有了 Agent Host
+[zk: localhost:2181(CONNECTED) 5] ls /status/hosts/5a4abcb27107
+[agentinfo, jobs, environment, hostinfo, up]       # 这个Host 也配置了一些必要的目录
+[zk: localhost:2181(CONNECTED) 6] get /status/hosts/5a4abcb27107/agentinfo
+{"inputArguments":["-Dcom.sun.management.jmxremote.port=9203", [...]
+[...]
+```
+
+Helios 环境搭建完毕！下面要做的是，如何使用 Helios 集群来部署和编排容器了！
+
+首先，创建 Helios Client 的快捷方式
+```
+$ alias helios="docker run -i --rm dockerinpractice/docker-helios \      # 命令会启动 Helios 容器，执行 helios 命令；命令完成后自动退出
+helios -z http://172.17.0.11:5801"                                       # 命令参数需要制定 Helios Masters 的位置
+```
+
+然后创建部署任务，注意这里不指定部署的位置，所做的只是定义一下任务
+```
+$ helios create -p nc=8080:8080 netcat:v1 ubuntu:14.04.2 -- \    # 任务名字 netcat:v1，指定镜像，分配端口
+sh -c 'echo hello | nc -l 8080'                                  # 容器启动后执行的命令
+$ helios jobs
+JOB ID NAME VERSION HOSTS COMMAND ENVIRONMENT
+netcat:v1:2067d43 netcat v1 0 sh -c "echo hello | nc -l 8080"
+```
+
+开始部署
+```
+$ helios deploy netcat:v1 5a4abcb27107           # 指定 Agent Host 的容器 ID，表示在该 Host 上部署 netcat 任务；是手动的静态部署！
+$ helios status
+JOB ID HOST GOAL STATE CONTAINER ID PORTS
+netcat:v1:2067d43 5a4abcb27107.START RUNNING b1225bc nc=8080:8080
+```
+
+最后，任务结束后的清理工作
+```
+$ helios undeploy -a --yes netcat:v1
+$ helios remove --yes netcat:v1
+```
+
+最后讨论一下 Helios 的集群搭建问题，有几种方式
+
+- 最直接的肯定是在多宿主上直接搭建
+- 其次，也可以在多宿主上，每个宿主上启动一个容器来搭建；此时，完全可以通过端口映射(Masters 5801/5802; Agents 5803/5804)，把对宿主地址的请求转发到容器之中；同时，启动容器时也要指定 --name $(hostname -f)，可以通过宿主机名字来请求；同样，Agents 容器启动时也要通过 -v 来 link 宿主机的 docker socket
+- 最后，本例中在单宿主上启动多个容器来搭建的方式，由于都在 bridge0 局域网中，故此采用了 ip 来访问

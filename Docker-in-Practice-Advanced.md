@@ -333,3 +333,103 @@ $ helios remove --yes netcat:v1
 - 最直接的肯定是在多宿主上直接搭建
 - 其次，也可以在多宿主上，每个宿主上启动一个容器来搭建；此时，完全可以通过端口映射(Masters 5801/5802; Agents 5803/5804)，把对宿主地址的请求转发到容器之中；同时，启动容器时也要指定 --name $(hostname -f)，可以通过宿主机名字来请求；同样，Agents 容器启动时也要通过 -v 来 link 宿主机的 docker socket
 - 最后，本例中在单宿主上启动多个容器来搭建的方式，由于都在 bridge0 局域网中，故此采用了 ip 来访问
+
+### Swarm 多宿主编排
+
+Swarm 是 Docker 提供的编排工具，和 Helios 手动配置容器部署位置的特性不同，Swarm 让集群自行控制容器部署的位置，隐藏集群中 hosts 的信息，让用户使用 Swarm 进行多宿主编排时，和在单机上使用 Docker 管理容器一样方便。
+
+Swarm 也包括 Master、Discovery Service 和 Agents，如 ![下图](./swarm.png)
+
+- 和 Helios 不同，Swarm 通常使用单个 Master，也可以查看 docker swarm 文档查看部署多 Masters 的方法
+- Swarm Master 启动后通过 discovery service 获取集群宿主节点信息，以便发布部署命令
+- Swarm 可以灵活选用多种服务发现方式和框架，不拘泥于 ZooKeeper。Docker 还给 Swarm 提供了一个基于 token 的 discovery service，后面例子中会用到
+- Agents 运行在 Swarm 集群的各个宿主机上，报告宿主机的连接信息给 discovery service，并接收部署任务运行容器。为了运行容器，集群的宿主机必须运行 Docker Daemon，并要暴露在外部的端口(默认 2375)上，方法是 -H ${ip:port}，这样 Master 就可以远程控制该节点的容器了
+- 类似 Helios，Swarm 也有一个 client 命令程序，同样不是必须运行在 Master 上，只要能正常连接 Master 即可
+
+举个完整流程的例子
+
+为使用 discovery service 生成 token
+```
+h1 $ docker pull swarm
+h1 $ docker run swarm create           # 创建 token，作为 cluster id
+126400c309dbd1405cd7218ed3f1a25e
+h1 $ CLUSTER_ID=126400c309dbd1405cd7218ed3f1a25e
+```
+
+此时可以查看 Swarm 集群的宿主列表了。当然，此时并没有宿主
+```
+h1 $ docker run swarm list token://$CLUSTER_ID
+h1 $ curl https://discovery-stage.hub.docker.com/v1/clusters/$CLUSTER_ID
+[]
+```
+
+在 h1 上启动 Agent 容器
+```
+h1 $ ip addr show eth0 | grep 'inet '      # 宿主 h1 的 ip
+inet 10.194.12.221/20 brd 10.194.15.255 scope global eth0
+
+h1 $ docker run -d swarm join --addr=10.194.12.221:2375 token://$CLUSTER_ID   # join 命令要指定本宿主的 ip ，以及待 join 集群的 id(token)
+9bf2db849bac7b33201d6d258187bd14132b74909c72912e5f135b3a4a7f4e51 
+h1 $ docker run swarm list token://$CLUSTER_ID
+10.194.12.221:2375          # 此时，list 命令可以看到新宿主了；另外，看到 discovery service 记录宿主的 ip 和端口
+h1 $ curl https://discovery-stage.hub.docker.com/v1/clusters/$CLUSTER_ID
+["10.194.12.221:2375"]      # 也可以使用 https 来获取宿主列表
+```
+
+同样在 h1 上启动 master 容器
+```
+h1 $ docker run -d -p 4000:2375 swarm manage token://$CLUSTER_ID    # 指定集群 id；由于 2375 端口已经被 agent 用了，故此映射到 4000 上
+04227ba0c472000bafac8499e2b67b5f0629a80615bb8c2691c6ceda242a1dd0
+```
+
+此时可以查看 Swarm 集群的信息了，因为有 Master 了！
+```
+h1 $ docker -H tcp://localhost:4000 info     # 看到 -H 选项，另外访问 4000 端口，也就是向 Master 的 Docker Daemon 请求
+Containers: 2
+Strategy: spread                 # 这个是任务在多个宿主机上分配的策略
+Filters: affinity, health, constraint, port, dependency    # 这个是筛选宿主的过滤器
+Nodes: 1                         # 一个宿主节点
+h1: 10.194.12.221:2375
+? Containers: 2                  # 两个容器，一个是 Agent 一个是 Master
+```
+
+集群中加入一个全新的宿主机，方法是在该宿主机上也启动 Agent 容器，并连接 cluster id
+```
+h2 $ docker run -d swarm join --addr=10.194.8.7:2375 token://$CLUSTER_ID
+h2 $ docker -H tcp://10.194.12.221:4000 info       # 再次向 Master 请求集群信息
+Containers: 3         # 共 3 个容器
+Strategy: spread
+Filters: affinity, health, constraint, port, dependency
+Nodes: 2              # 共 2 个宿主
+h2: 10.194.8.7:2375
+? Containers: 1       # 宿主 h2 上一个容器 (Agent)
+h1: 10.194.12.221:2375
+? Containers: 2       # 宿主 h1 上一个容器 (Master / Agent)
+```
+
+最后看看如何部署容器
+```
+h2 $ docker -H tcp://10.194.12.221:4000 run -d ubuntu:14.04.2 sleep 60     # 仍然向 Master 发请求，不需要在 Master 上，只要能连接 Master 即可
+0747c14774c70bad00bd7e2bcbf583d756ffe6d61459ca920887894b33734d3a
+
+h2 $ docker -H tcp://localhost:4000 ps      # 同样，向 Master 请求 docker ps
+CONTAINER ID IMAGE COMMAND CREATED STATUS PORTS NAMES
+0747c14774c7 ubuntu:14.04 sleep 60 19 seconds ago Up Less than a second h1/serene_poitras
+
+h2 $ docker -H tcp://10.194.12.221:4000 info | grep Containers
+Containers: 4
+? Containers: 1
+? Containers: 3     # 新容器被部署在 h1 上，虽然是从 h2 上发起的请求
+```
+
+如何删除集群呢？向 discovery service 发起请求
+```
+h1 $ curl -X DELETE https://discovery.hub.docker.com/v1/clusters/$CLUSTER_ID
+```
+
+我们看到
+
+- Swarm 集群自己控制容器部署的位置
+- Swarm Client 只要能够连接 Master，就可以像单机一样执行 Docker 命令，比如 docker info/ docker ps/ docker run，只是加了个 -H 选项而已
+- 本例中，Master/Agent 都是在宿主机上通过 Docker 容器创建的，为了让 Client 能连接 Master，也为了让 Master 控制宿主 Agent 启动容器，Master 和 Agent 所在宿主的 Docker Daemon 都要通过 -H ${ip:port} 的方式启动
+- Master 和 Agent 都把服务对应的端口映射到了宿主机的外部端口上，这样，相互间的交互并不是通过 Docker 内部的虚拟局域网进行的 (因为要跨宿主机通讯，docker 虚拟局域网满足不了这个需求)，而是通过向各自宿主的端口发送 docker 命令来实现通讯的

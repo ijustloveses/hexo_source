@@ -439,6 +439,38 @@ h1 $ curl -X DELETE https://discovery.hub.docker.com/v1/clusters/$CLUSTER_ID
 - Helios Client 发送部署指令给 Masters，并由用户指定部署位置，然后 Masters 向 ZK 写入指令，然后对应的 Agent 读取指令并启动容器；也就是说由 ZK 来协调，容器是 Agent 自己来启动的，故此 Agent 不需要暴露 docker daemon
 - Swarm 则是由 Master 来协调和管理部署逻辑，discovery service 只是用于维护 Swarm 集群的宿主和容器信息；Master 收到部署指令后，根据自身的逻辑找到一个 Agent Host，然后主动向该 Host 暴露的 docker daemon 发起容器启动命令
 
+### 使用 Kubernetes 方便的 scale up
+
+前面介绍的 Helios 和 Swarm 是两个极端，前者手动静态部署，后者全自动动态部署。而 Google 出品的 Kubernetes 则是从另一个角度来看待容器的编排，它把业务相关容器组成 pod 来提供服务，并实现了 pod 服务的轻松并行扩容。
+
+Kubernetes 的架构简略的看，如 ![下图](./kubernetes.png)
+
+Kubernetes 是 master-minion 架构：Master 单节点，负责接收命令和编排资源；每个 Minion 节点都安装着 Docker 和 Kubelet 服务，后者负责管理本节点上的 pods；自带 Etcd 负责维护集群信息；Kubernetes 还提供一个 client 来管理 Master，称作 kubectl
+
+Kubernetes 既可以直接安装在你的 host 上，得到一个 single-minion cluster，也可以使用 vagrant 安装一个 multi-minion cluster，这里不详细介绍了。下面会介绍一个例子，使用 Kubernetes 来把事先创建好的容器 scale up，而这个例子假设你已经安装好一个 multi-minion cluster
+
+首先使用 kubectl 的 run-container 命令来启动容器，并把容器包装在一个 pod 中
+```
+$ kubectl run-container todo --image=dockerinpractice/todo     # 指定容器的镜像，指定 pod 名字为 todo
+$ kubectl get pods | egrep "(POD|todo)"           # get pods 命令列出当前的 pods，我们筛选出其中的 todo pod 以及 header
+POD        IP          CONTAINER(S) IMAGE(S) HOST LABELS             STATUS  CREATED        MESSAGE
+todo-hmj8e 10.245.1.3/                            run-container=todo Pending About a minute      # label 为 key-value 对儿， Pending 是因为还要 pull image，故此还未运行
+```
+
+此时就可以简单的扩容，比如运行起完全相同的 3 个 pod 服务，如下
+```
+$ kubectl resize --replicas=3 replicationController todo     # replicationController 是 Kubernetes 提供的复制控制服务，todo 是 pod 名字
+resized
+
+$ kubectl get pods | egrep "todo"
+todo-2ip3n 10.246.2.2 10.245.1.4/10.245.1.4 run-container=todo Running 10 minutes
+todo-4os5b 10.246.1.3 10.245.1.3/10.245.1.3 run-container=todo Running 2 minutes
+todo-cuggp 10.246.2.3 10.245.1.4/10.245.1.4 run-container=todo Running 2 minutes    # 看到，labels 是相同的，3个 pod 被分配到两个 hosts 上
+```
+
+这里简单的介绍了 Kubernetes 的 scale up 方法，例子中 pod 是由一个容器构成的，实际上 pod 可以包含业务相关的多个容器，而且容器间共享 ip/volumes/ports，具体的这里就不再多说了，参见[这篇文章](https://github.com/ijustloveses/hexo_source/blob/master/Kubernetes-microservices-with-docker.md)
+
+
 
 
 

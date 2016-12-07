@@ -382,7 +382,7 @@ h1 $ docker run -d -p 4000:2375 swarm manage token://$CLUSTER_ID    # 指定集�
 04227ba0c472000bafac8499e2b67b5f0629a80615bb8c2691c6ceda242a1dd0
 ```
 
-此时可以查看 Swarm 集群的信息了，因为有 Master 了！
+此时 Docker (Swarm) Client 可以查看 Swarm 集群的信息了，因为有 Master 了！
 ```
 h1 $ docker -H tcp://localhost:4000 info     # 看到 -H 选项，另外访问 4000 端口，也就是向 Master 的 Docker Daemon 请求
 Containers: 2
@@ -433,3 +433,46 @@ h1 $ curl -X DELETE https://discovery.hub.docker.com/v1/clusters/$CLUSTER_ID
 - Swarm Client 只要能够连接 Master，就可以像单机一样执行 Docker 命令，比如 docker info/ docker ps/ docker run，只是加了个 -H 选项而已
 - 本例中，Master/Agent 都是在宿主机上通过 Docker 容器创建的，为了让 Client 能连接 Master，也为了让 Master 控制宿主 Agent 启动容器，Master 和 Agent 所在宿主的 Docker Daemon 都要通过 -H ${ip:port} 的方式启动
 - Master 和 Agent 都把服务对应的端口映射到了宿主机的外部端口上，这样，相互间的交互并不是通过 Docker 内部的虚拟局域网进行的 (因为要跨宿主机通讯，docker 虚拟局域网满足不了这个需求)，而是通过向各自宿主的端口发送 docker 命令来实现通讯的
+
+下面的一点是我根据上述内容的猜测：
+
+- Helios Client 发送部署指令给 Masters，并由用户指定部署位置，然后 Masters 向 ZK 写入指令，然后对应的 Agent 读取指令并启动容器；也就是说由 ZK 来协调，容器是 Agent 自己来启动的，故此 Agent 不需要暴露 docker daemon
+- Swarm 则是由 Master 来协调和管理部署逻辑，discovery service 只是用于维护 Swarm 集群的宿主和容器信息；Master 收到部署指令后，根据自身的逻辑找到一个 Agent Host，然后主动向该 Host 暴露的 docker daemon 发起容器启动命令
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 集群部署方案的小结
+
+方案一：最普通的方法，自然就是在多个 Hosts 上直接部署集群，不使用 Docker 容器
+
+方案二：在单宿主机上，通过容器模拟 Hosts，通过 Docker 虚拟局域网模拟 Hosts 之间的网络连接。这里还有两个分支
+
+- 通过 --link 、docker-compose link 、docker network 或者 Resolvable 创建局域网中的 DNS，这样集群可以通过容器的 hostname 来搭建
+- 直接通过 ip 互联搭建集群，如上面 Helios 的例子
+
+这个方案就是对方案一的直接模拟
+
+方案三：使用 WeaveNet 在多宿主机的容器之间创建虚拟局域网，这个相当于对方案二在多宿主机下的扩展，然后使用 ip 在多宿主机的容器间创建集群
+
+方案四：在多宿主机上通过容器部署集群，容器本身通过端口映射来 tunnel 到宿主机上，如上面 Swarm 的例子。和上面的方案比较来看
+
+- 外部对集群的使用上，完全类似方案一，直接访问宿主机的端口，然后通过端口映射由容器提供服务
+- 集群内部的互访也是一样，比如 discovery service 之类的维护的都是宿主机的 ip 和端口，完全不使用容器的局域网 ip 和端口，这一点和方案二迥然不同。这一点，可以看 [Etcd](https://github.com/ijustloveses/hexo_source/blob/master/Docker-in-Practice-Etcd.md) 的例子
+- 其实就是说，通过端口映射，用宿主机给容器做了个壳，然后把容器直接当宿主机来使用
+
+
+另外补充一下， 如果集群中的容器本身还有启动其他容器的责任(比如容器编排集群的 Agent)，那么通常有两种做法
+
+- 通过 -v 选项 mount 宿主机的 docker daemon socket，这样容器本身就可以主动启动新容器，所谓主动模式
+- 暴露宿主 docker daemon socket，这样外部就可以调用容器所在宿主的 docker daemon 了，所谓被动模式

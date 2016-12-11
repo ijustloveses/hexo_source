@@ -471,6 +471,159 @@ todo-cuggp 10.246.2.3 10.245.1.4/10.245.1.4 run-container=todo Running 2 minutes
 这里简单的介绍了 Kubernetes 的 scale up 方法，例子中 pod 是由一个容器构成的，实际上 pod 可以包含业务相关的多个容器，而且容器间共享 ip/volumes/ports，具体的这里就不再多说了，参见[这篇文章](https://github.com/ijustloveses/hexo_source/blob/master/Kubernetes-microservices-with-docker.md)
 
 
+### 创建 Mesos framework 编排容器
+
+Mesos 并非容器编排工具，而是"framework for a framework"，其本质是提供了多宿主机之间的资源管理抽象，协调资源以运行其他的框架和应用。
+
+Mesos 的构架和流程如 ![图](./mesos.png)
+
+- Slaves 运行在集群节点上，保持把可用的资源通知给 Active Master
+- Master 持续收到各 Slaves 的通报，生成对应的 resource offers，并把 offers 发送给 Scheduler
+- Scheduler 收到 offers，并根据各个 Slaves 的资源情况决定在哪个 Slave 节点上执行任务，并把决策和任务返回给 Masters
+- Master 把任务返回给决策对应的 Slave
+- Slave 把任务信息传给本节点的 Executor，如果没有则创建一个 Executor
+- Executor 读取任务信息，在节点上启动任务，任务运行
+
+这个架构中，Mesos 集群提供了 Masters、Slaves、内建的 Shell Executor；Mesos 用户则负责实现一个 Framework (或 Application)，其中包括 Scheduler 用于定义任务和根据资源做决策，还可以选择不使用默认的 Executor 而自定义 Executor；实际上也有很多第三方的 Framework，下一章我们会介绍一个；Zookeeper 只是用于多 Masters 间做 leader election，而不用于维护 Slaves 节点，Slaves 直接和 Active Master 通讯
+
+看了 Mesos 的流程后，不禁要问如何让 Mesos 和 Docker 发生关系来编排容器呢？原来 Mesos 自身支持容器化的 Executor 和任务，这里的容器化不仅仅包括 Docker，但是由于 Docker 的普遍性，Mesos 对 Docker 有一些额外和特有的支持
+
+这里举个自己实现框架的例子，只实现了 Scheduler，并没有自定义 Executor，而是使用默认的；整个集群都部署在单宿主机的 Docker 局域网内
+
+启动 Master 容器。这里采用单 Master，而不用 Masters 集群，这样连 Zookeeper 也省了
+```
+$ docker run -d --name mesmaster redjack/mesos:0.21.0 mesos-master --work_dir=/opt     # mesos-master 命令
+
+$ docker inspect -f '{{.NetworkSettings.IPAddress}}' mesmaster
+172.17.0.2             <-- 查看 Master ip，是 Docker 局域网内的 ip
+```
+
+启动 Slave 容器。Master 容器的启动选项非常简单，而 Slave 的就麻烦的多
+```
+$ docker run -d --name messlave --pid=host \
+-v /var/run/docker.sock:/var/run/docker.sock -v /sys:/sys \    # Slave节点要负责启动任务容器
+redjack/mesos:0.21.0 mesos-slave \                             # mesos-slave 命令
+--master=172.17.0.2:5050 --executor_registration_timeout=5mins \    # 指定 Master 和通讯超时
+--isolation=cgroups/cpu,cgroups/mem --containerizers=docker,mesos \    # Mesos 的特有 Docker 支持选项
+--resources="ports(*):[8000-8100]"       # Mesos 默认提供 31000-32000，我们这里使用 8000-8100
+
+$ docker inspect -f '{{.NetworkSettings.IPAddress}}' messlave
+172.17.0.3
+```
+
+启动自定义的 Framework，这里采用笔者实现的框架
+```
+$ git clone https://github.com/docker-in-practice/mesos-nc.git
+# 启动 Mesos 容器，但不调用 mesos-master 或 mesos-slave，而是调用 bash，并把当前目录映射到 /opt
+$ docker run -it --rm -v $(pwd)/mesos-nc:/opt redjack/mesos:0.21.0 bash   
+# apt-get update && apt-get install -y python
+# cd /opt
+# export PYTHONUSERBASE=/usr/local
+# python myframework.py 172.17.0.2:5050          # 这里启动 Framework，并指定 Master 的 5050 端口
+I0312 02:11:07.642227 182 sched.cpp:137] Version: 0.21.0
+I0312 02:11:07.645598 176 sched.cpp:234] New master detected at master@172.17.0.2:5050
+I0312 02:11:07.648449 176 sched.cpp:408] Framework registered with 20150312-014359-33558956-5050-1-0000
+Received offer 20150312-014359-33558956-5050-1-O0. cpus: 4.0, mem: 6686.0, ports: 8000-8100
+Creating task 0
+Task 0 is in state TASK_RUNNING
+[...]
+Received offer 20150312-014359-33558956-5050-1-O5. cpus: 3.5, mem: 6586.0, ports: 8005-8100
+Creating task 5
+Task 5 is in state TASK_RUNNING
+[...]
+Received offer 20150312-014359-33558956-5050-1-O6. cpus: 3.4, mem: 6566.0, ports: 8006-8100
+Declining offer
+[...]
+```
+看到 framework 接收到 Master 发来的 offers，然后决策并创建任务，到最后传给 Master 并由后者协调 Slave 启动任务
+
+myframework.py 为 framework 的代码，well-commented，简单来说，实现 framework 的话需要实现下面的代码：
+```
+class TestScheduler(mesos.interface.Scheduler):           # 继承自 mesos.interface.Scheduler
+[...]
+def registered(self, driver, frameworkId, masterInfo):    # 向 Master 注册 framework，可实现也可以继承父类
+[...]
+def statusUpdate(self, driver, update):                   # 状态更新，同样可继承父类
+[...]
+def resourceOffers(self, driver, offers):                 # 这个必须实现，是 framework 的核心逻辑
+[...]
+```
+resourceOffers 函数决策启动任务或者拒绝 offer，其逻辑类似下面
+
+- 遍历当前的 offers，从 offers 中取出 offer，从 offer 中取出资源
+- 计算资源是否足够启动任务，是则接受 offer 启动任务，否则 decline offer
+
+最后说一句，上面并没有展示任务启动的细节，这里大概说一下， myframework.py 中定义的具体任务是由 Slave 启动一个容器，容器中执行 echo 'hello <task id>' | nc -l <port>
+
+
+### Marathon framework for Mesos
+
+前面看到可以实现 Mesos framework 来细粒度的控制资源和任务的调度，然而实现起来并不简单，而且 error-prone。对于一些并不是很复杂的系统，我们可以直接使用 Marathon 这个 Mesosphere 公司自己研发 framework
+
+Marathon 依赖 Zookeeper，那么我们确保上一章的 setting，再启动一个 Zookeeper；此时，集群各个节点如下：
+```
+$ docker inspect -f '{{.NetworkSettings.IPAddress}}' mesmaster
+172.17.0.2
+$ docker inspect -f '{{.NetworkSettings.IPAddress}}' messlave
+172.17.0.3
+$ docker inspect -f '{{.NetworkSettings.IPAddress}}' zookeeper
+172.17.0.4
+```
+
+启动 Marathon
+```
+$ docker pull mesosphere/marathon:v0.8.2
+[...]
+$ docker run -d -h $(hostname) --name marathon -p 8080:8080 \     # 指定 hostname，并映射 web 服务的端口
+mesosphere/marathon:v0.8.2 --master 172.17.0.2:5050 --local_port_min 8000 \     # 指定 Master 和端口范围
+--local_port_max 8100 --zk zk://172.17.0.4:2181/marathon          # 指定 Zookeeper
+```
+
+Marathon 在 8080 端口上开放了一个 Web 控制台，可以创建 App，在 Marathon 的世界，App 代表一个或多个具有相同定义的任务；然后设置 App 的 CPU/Mem/Disk，最后设置 App 执行的实际命令即可。之后我们就可以在 Web 界面中看到执行的任务了
+
+上面创建的 App 配置信息可以通过如下的 HTTP Restful API 来获取
+```
+$ curl http://localhost:8080/v2/apps/marathon-nc/versions
+{"versions":["2015-06-30T19:52:44.649Z"]}
+
+$ curl -s http://localhost:8080/v2/apps/marathon-nc/versions/2015-06-30T19:52:44.649Z > app.json
+$ cat app.json                           # App 配置保存在 app.json 文件之中
+{"id":"/marathon-nc", "cmd":"echo \"hello $MESOS_TASK_ID\" | nc -l $PORT0",[...] 
+
+$ curl http://172.17.0.3:8000            # 上面查到 App 的命令信息后，可以调用 App 了
+hello marathon-nc.f56f140e-19e9-11e5-a44d-0242ac110012
+```
+
+还是回到 Docker，如何利用 Marathon 编排容器呢？也就是说如何创建一个 App，App 命令是启动某个特定的容器呢？
+
+在前面得到的 app.json 中加入
+```
+"container": {
+    "type": "DOCKER",
+    "docker": {
+        "image": "ubuntu:14.04.2",
+        "network": "BRIDGE",
+        "portMappings": [{"hostPort": 8000, "containerPort": 8000}]    # 映射到宿主 8000 端口
+    }
+}
+```
+
+此时不能通过 Marathon WEB 界面来创建容器化任务了，而是通过 Http Restful API 来创建
+```
+$ curl -X POST -H 'Content-Type: application/json; charset=utf-8' \
+--data-binary @app.json http://localhost:8080/v2/apps
+```
+
+现在可以通过 docker 命令查看容器化启动的 app 了
+```
+$ docker ps --since=marathon
+CONTAINER ID IMAGE COMMAND CREATED STATUS PORTS NAMES
+284ced88246c ubuntu:14.04 "\"/bin/sh -c 'echo About a minute ago Up About a minute 0.0.0.0:8000->8000/tcp mesos-1da85151-59c0-4469-9c50-2bfc34f1a987
+
+$ curl localhost:8000              # 调用命令，8000 端口已经映射到容器中
+hello mesos-nc.675b2dc9-1f88-11e5-bc4d-0242ac11000e
+```
+
 
 
 
@@ -491,7 +644,7 @@ todo-cuggp 10.246.2.3 10.245.1.4/10.245.1.4 run-container=todo Running 2 minutes
 方案二：在单宿主机上，通过容器模拟 Hosts，通过 Docker 虚拟局域网模拟 Hosts 之间的网络连接。这里还有两个分支
 
 - 通过 --link 、docker-compose link 、docker network 或者 Resolvable 创建局域网中的 DNS，这样集群可以通过容器的 hostname 来搭建
-- 直接通过 ip 互联搭建集群，如上面 Helios 的例子
+- 直接通过 ip 互联搭建集群，如上面 Helios 和 Mesos/Marathon 的例子
 
 这个方案就是对方案一的直接模拟
 

@@ -624,20 +624,218 @@ $ curl localhost:8000              # 调用命令，8000 端口已经映射到�
 hello mesos-nc.675b2dc9-1f88-11e5-bc4d-0242ac11000e
 ```
 
+服务发现
+=========
+
+### Using Consul to discover services
+
+前面介绍过 Etcd 和 Zookeeper，都是 discover services 的框架；Consul 是个和 Etcd 齐名的框架，而且它同时具有 k-v store, discover services 和 health checks 的功能，可以视为 Etcd、SkyDNS 和 Nagios 的综合体。k-v store 作为 Service Configuration 的方面，Consul 和 Etcd 非常类似，不再赘述；这里着重介绍 Consul 的 service discovery 和 service monitoring 功能
+
+Consul 的架构如 ![图](./consul.png)
+
+- server agents 负责管理 Consul 集群存储的数据，维护数据的 consensus (半数以上的 server agents agree)
+- client agents 在每个被 Consul 管理的节点上都要有一个，收集其所在节点上容器的信息，并把请求转发给 server agents 
+    + 收集的容器信息为容器上运行的服务信息，用于注册服务；以及容器运行状态信息，用于服务监控
+    + 所转发给 server agents 的请求为 DNS 请求，也就是通过服务名字找到对应的容器 (可能跨宿主机，或者说跨节点)
+
+在节点 c1 上启动一个 server agent (本例中，只启动一个 server agent，这样没有一致性的问题，只有可用性的问题了)
+```
+c1 $ IMG=dockerinpractice/consul-server 
+c1 $ docker pull $IMG          # 在宿主机 c1 上 pull consul-server 的镜像，基于 alpine 的貌似
+c1 $ ip addr | grep 'inet ' | grep -v 'lo$\|docker0$\|vbox.*$'
+inet 192.168.1.87/24 brd 192.168.1.255 scope global wlan0     # 查出 c1 对外部的 ip 为 192.168.1.87
+c1 $ EXTIP1=192.168.1.87
+
+c1 $ echo '{"ports": {"dns": 53}}' > dns.json         # 生成一个配置文件，记录 dns 的端口 53
+c1 $ docker run -d --name consul --net host \         # 这个下面详细说明
+-v $(pwd)/dns.json:/config/dns.json $IMG -bind $EXTIP1 -client $EXTIP1 \   # 配置文件 mount 到容器，并指明 IP
+-recursor 8.8.8.8 -recursor 8.8.4.4 \       # 当 Consul server agent 无法发现服务时，转发到这两个默认 dns
+-bootstrap-expect 1                         # 本 Consul server agents 集群启动所需最少 agent 数，这里只有一个
+```
+
+这个部分着重说一下 --net host 选项：server agent 容器并不暴露和使用 docker 虚拟局域网 ip，而是使用宿主机的 ip 和端口。这时通常的做法是把容器的端口映射到宿主机上，不过这样 server agent 就要暴露多达 8 个端口才行；一个 alternative 的做法是使用 --net host，这样容器和宿主机共享网络资源，不需要做映射就可以把容器当作宿主机一样用；当然，代价就是这个容器不会在 bridge 虚拟网络上(但是由于共享宿主网络，故此，它本身是 docker0)；前面说过 server agent 并不打算使用 bridge 网络，故此没有问题。另外，如果想在多节点上启动多 server agents 的话，让后续的节点同样运行的命令启动容器，命令中多加一个 -join ${c1_ip} 即可
+
+在节点 c2 上启动 client agent
+```
+c2 $ IMG=dockerinpractice/consul-agent
+c2 $ docker pull $IMG       # 在宿主机 c2 上 pull consul-agent 镜像，基于 alpine 的貌似；注意和 c1 的镜像不同
+c2 $ EXTIP1=192.168.1.87    # EXTIP1 记录的是 c1 节点，也就是 server agent 的 IP；client agent 需要 join 
+c2 $ ip addr | grep docker0 | grep inet
+inet 172.17.42.1/16 scope global docker0        # 获取 c2 节点内部 docker 虚拟局域网 bridge 的网关 IP
+c2 $ BRIDGEIP=172.17.42.1
+c2 $ ip addr | grep 'inet ' | grep -v 'lo$\|docker0$'
+inet 192.168.1.80/24 brd 192.168.1.255 scope global wlan0     # 获取 c2 节点的外部 IP
+c2 $ EXTIP2=192.168.1.80
+
+c2 $ echo '{"ports": {"dns": 53}}' > dns.json              # 同样指定 dns 端口 53
+c2 $ docker run -d --name consul-client --net host \       # 同样使用 --net host 省去了大量端口映射
+-v $(pwd)/dns.json:/config/dns.json \
+$IMG -client $BRIDGEIP \       # 由于共享宿主网络，本选项把 http/dns 等服务都监听在宿主 docker bridge ip 地址
+-bind $EXTIP2 \                # 把本身的外部 ip 用于和 consul server agents 通讯
+-join $EXTIP1 -recursor 8.8.8.8 -recursor 8.8.4.4          # 加入 $EXTIP1 server agents 对应的 consul 集群
+```
+
+- 本 consul 集群的 server agent 和 client agent 是各节点上的容器通过 --net host 的方式来配置和搭建的
+- server agent 直接通过外部 ip 提供 dns 服务
+- client agent 通过外部 ip 和 server agent 通讯，一方面上报节点健康状况、节点内容器状况，一方面转发 dns 请求
+- client agent 通过 docker ip 为节点内其他容器提供 dns 服务，可以看到其运行的选项和 Resolvable 非常类似
+- client agent 节点内部的容器向 bridge ip 请求 dns 信息，由于 bridge ip 是个节点内部 ip，故此涉及到跨节点的 dns 请求则需要直接发送到 server agent 处理 (发送给 client agent 再由 client agent 转发给 server agent 比较慢)
+
+下面来验证 c2 确实连接到 server agent 了
+```
+c2 $ curl -sSL $BRIDGEIP:8500/v1/agent/members | tr ',' '\n' | grep Name     # 看到这里直接向 bridge ip 发请求
+[{"Name":"mylaptop2"
+{"Name":"mylaptop" ....
+```
+
+在 client agent c2 上创建一个 http 服务并注册
+```
+c2 $ docker run -d --name files -p 8000:80 ubuntu:14.04.2 python3 -m http.server 80    # 映射 c2 的 8000 端口
+
+c2 $ docker inspect -f '{{.NetworkSettings.IPAddress}}' files         # 看到容器内网 ip 
+172.17.0.16
+c2 $ /bin/echo -e 'GET / HTTP/1.0\r\n\r\n' | nc -i1 172.17.0.16 80 | head -n 1
+HTTP/1.0 200 OK
+
+c2 $ curl -X PUT --data-binary '{"Name": "files", "Port": 8000}' \    # 注册服务，名字 files 端口 8000
+$BRIDGEIP:8500/v1/agent/service/register                     # 请求发送到 bridge ip，会转发给 server agent 
+
+c2 $ docker logs consul-client | tail -n 1
+2015/08/15 03:44:30 [INFO] agent: Synced service 'files'     # 看到同步了服务
+```
+注册信息中 ID 默认和 Name 一样，这里服务名是 files；但是如果你有一个服务的多个实例，那么每个实例都要指定不同的 ID
+
+既然同步了，那么应该可以在 server dns 上查询这个服务了
+```
+c2 $ EXTIP1=192.168.1.87         # 在 c1 外部 IP 也就是 server dns 上找
+c2 $ dig @$EXTIP1 files.service.consul +short    # 通过 ${servicename}.service.consul 来查找服务
+192.168.1.80                     # 找到了，是节点 c2 (的 8000 端口)
+
+c2 $ BRIDGEIP=172.17.42.1        # 在 c2 的 bridge ip 也就是 client dns 上找
+c2 $ dig @$BRIDGEIP files.service.consul +short
+192.168.1.80                     # 同样找到了
+c2 $ dig @$BRIDGEIP files.service.consul srv +short    # 加入 srv 选项显示服务信息
+1 1 8000 mylaptop2.node.dc1.consul.
+
+c2 $ docker run -it --dns $BRIDGEIP ubuntu:14.04.2 bash      # c2 节点启动新的容器，同时指定 dns 为 client dns
+root@934e9c26bc7e:/# ping -c1 -q www.google.com              # ping 外网 
+1 packets transmitted, 1 received, 0% packet loss, time 0ms  # OK
+root@934e9c26bc7e:/# ping -c1 -q files.service.consul        # ping files 服务
+1 packets transmitted, 1 received, 0% packet loss, time 0ms  # OK
+```
+发现在 c2 节点内部，client agent 提供的 dns 服务和 Resolvable 非常之类似；而 Consul 还提供了跨节点的 dns 功能！之前 c2 节点上启动的 files http 服务，由于没有指定 dns，故此无法直接查询其他服务；而由于在 c2 节点上对其进行了注册，故此指定了 dns 的其他容器都可以查询到 files 服务；即使是 c2 节点内部的容器，查询到 files 服务的 ip 也是 c2 节点的外部 ip 192.168.1.80，而不是容器内网的 ip，这是因为在 Consul 上注册的是外部 ip，跨节点 dns 服务所要求的
+
+最后看一下 Consul 的 Service Monitering 功能。Consul 支持用户运行一个脚本，调用命令并通过命令的返回值来判断服务的健康状况，0 代表成功，1 代表 warning，其他值为 critical error。
+
+例如，c2容器上，实现一个脚本 check，以 http 服务的名字为参数，从 consul 中读取其端口，然后 wget http 服务
+```
+c2 $ cat >check <<EOF
+#!/bin/sh
+set -o errexit
+set -o pipefail
+SVC_ID="$1"
+SVC_PORT="$(wget -qO - 172.17.42.1:8500/v1/agent/services | jq ".$SVC_ID.Port")"    # 向 consul 发请求
+wget -qsO - "localhost:$SVC_PORT"
+EOF
+```
+把脚本 check 发送到 consul client agent 上，并给 /check 添加执行权限
+```
+c2 $ cat check | docker exec -i consul-client sh -c 'cat > /check && chmod +x /check'
+```
+在 c2 容器上再创建 health.json 文件，是 consul 用于服务监控的配置文件
+```
+{
+"Name": "filescheck",
+"ServiceID": "files",        # 这里配置了服务名字 files
+"Script": "/check files",    # 这里调用刚刚发送到 client agent 中的健康监控脚本，并把 files 作为参数传给脚本
+"Interval": "10s"            # 每 10 秒查看一次健康状态
+}
+``` 
+把配置文件提交给 Consul 
+```
+c2 $ docker exec consul-client sh -c 'apk update && apk add jq'      # 首先安装一下 jq，否则 check 会调用失败
+c2 $ curl -X PUT --data-binary @health.json 172.17.42.1:8500/v1/agent/check/register
+```
+稍等一下，然后就可以进行监控的调用了
+```
+c2 $ curl -sSL 172.17.42.1:8500/v1/health/service/files | python -m json.tool | head -n 13    # 指定了 files
+[
+{
+"Checks": [
+  {
+    "CheckID": "filescheck",
+    "Name": "filescheck",
+    "Node": "mylaptop2",
+    "Notes": "",
+    "Output": "Success!\n",
+    "ServiceID": "files",
+    "ServiceName": "files",
+    "Status": "passing"
+},
+```
+注意，agent client 中需要事先安装好 jq，才会调用成功；否则会返回 critical，而且 Consul 会把监控失败的服务移出 dns entry
+
+### 使用 Registrator 自动服务注册
+
+Consul 一个明显的问题是在注册和删除服务的时候比较复杂，尤其是在有多个服务需要部署在不同位置的情况下。当不希望都采用手动方式来管理服务时，可以使用构建在 Consul 之上的 Registrator
+
+首先采用上一节相同的方法创建 server agent 和 client agent，同时不要创建服务，我们在此基础上来进一步构建 Registrator。我们全部的工作都在 c2 节点，也就是 client agent 容器所在节点上
+
+首先 startup Registrator
+```
+$ IMG=gliderlabs/registrator:v6
+$ docker pull $IMG
+$ EXTIP=192.168.1.80
+$ BRIDGEIP=172.17.42.1
+$ docker run -d --name registrator -h $(hostname)-reg \    # Registrator 容器的 hostname 为 $(hostname)-reg
+-v /var/run/docker.sock:/tmp/docker.sock \                 # 可以访问 c2 的 docker 来获取容器启动和停止的信息
+$IMG -ip $EXTIP -resync 60 \                  # 指定外部 ip ；配置所有容器每 60 秒刷新状态
+consul://$BRIDGEIP:8500                       # 指定 Consul 接口；如果失败了，那么使用 $EXITIP 应该也可以
+
+$ docker logs registrator
+2015/08/14 20:05:57 Forcing host IP to 192.168.1.80
+2015/08/14 20:05:58 consul: current leader 192.168.1.87:8300     # 看到已经成功连到 Consul 集群
+2015/08/14 20:05:58 Using consul adapter: consul://172.17.42.1:8500   # Consul 接口
+2015/08/14 20:05:58 Listening for Docker events ...                   # 已经在接收 Docker 容器的信息了
+2015/08/14 20:05:58 Syncing services on 2 containers 
+..........
+```
+
+此时可以很方便的注册新服务了
+```
+$ curl -sSL 172.17.42.1:8500/v1/catalog/services | python -m json.tool
+{ "consul": [] }           # 开始只有 consul 服务
+
+$ docker run -d -e "SERVICE_NAME=files" -p 8000:80 ubuntu:14.04.2 \    # 通过环境变量来定义服务名，绑定 8000 端口
+python3 -m http.server 80                                              # 创建 http 服务
+3126a8668d7a058333d613f7995954f1919b314705589a9cd8b4e367d4092c9b
+$ docker inspect 3126a8668d7a | grep 'Name.*/'
+"Name": "/evil_hopper",              # files 服务的容器名字为 evil_hopper
+```
+查看服务
+```
+$ curl -sSL 172.17.42.1:8500/v1/catalog/services | python -m json.tool
+{  "consul": [], "files": []  }      # 看到新注册的 files 服务了
+$ curl -sSL 172.17.42.1:8500/v1/catalog/service/files | python -m json.tool
+[
+  {
+    "Address": "192.168.1.80",          # 服务在 1.80 也就是 c2 节点上
+    "Node": "mylaptop2",                # 节点名字
+    "ServiceAddress": "192.168.1.80",   # 服务 ip
+    "ServiceID": "mylaptop2-reg:evil_hopper:80",     # 服务 id，${Registrator hostname}:${服务容器名字}:${端口}
+    "ServiceName": "files",             # 服务名字
+    "ServicePort": 8000,                # 服务端口
+    "ServiceTags": null
+  }
+]
+```
+看到，注册服务非常简单，只要在创建服务容器时指定环境变量即可。Registrator 通过 docker sock 获知容器信息，然后发现容器服务的 ip 和端口，并添加到 Consul 中，设置 service id。注意到 service id 使用了 Registrator 容器的 hostname
+
+Registrator 就简单介绍到这里，实际上它还可以从环境变量中得到其他信息，比如服务的 tag/name/port/health checks 等，详见 [这里](http://gliderlabs.com/registrator/latest/user/backends/#consul)
 
 
-
-
-
-
-
-
-
-
-
-
-
-### 集群部署方案的小结
+集群部署方案的小结
+===================
 
 方案一：最普通的方法，自然就是在多个 Hosts 上直接部署集群，不使用 Docker 容器
 
@@ -656,6 +854,7 @@ hello mesos-nc.675b2dc9-1f88-11e5-bc4d-0242ac11000e
 - 集群内部的互访也是一样，比如 discovery service 之类的维护的都是宿主机的 ip 和端口，完全不使用容器的局域网 ip 和端口，这一点和方案二迥然不同。这一点，可以看 [Etcd](https://github.com/ijustloveses/hexo_source/blob/master/Docker-in-Practice-Etcd.md) 的例子
 - 其实就是说，通过端口映射，用宿主机给容器做了个壳，然后把容器直接当宿主机来使用
 
+方案五：其实是对方案四的 Hack，不使用端口映射，而是使用 --net=host 选项来直接共享宿主机的网络，如 Consul 
 
 另外补充一下， 如果集群中的容器本身还有启动其他容器的责任(比如容器编排集群的 Agent)，那么通常有两种做法
 

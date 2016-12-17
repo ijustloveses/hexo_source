@@ -42,3 +42,39 @@ $ docker run -ti --cap-drop=CHOWN --cap-drop=DAC_OVERRIDE \
 --cap-drop=SYS_CHROOT --cap-drop=AUDIT_WRITE debian /bin/bash
 ```
 最后，还是要说明一下，capabilities 是控制 root 用户如何使用其他用户资源的权限，而 root 用户对其自身的资源仍有完全的控制权限
+
+### 通过 HTTP auth 来访问 Docker 容器
+
+我们通过 -H 命令，使用 http 方式来启动 docker，代理后台的 unix domain socket；然后加入 http authentication，只允许有权限的用户访问 http 接口。所对应的代码在[这里](https://github.com/docker-in-practice/docker-authenticate)
+
+dockerinpractice/docker-authenticate 镜像的 Dockerfile 如下
+```
+FROM debian
+RUN apt-get update && apt-get install -y nginx apache2-utils
+RUN htpasswd -c /etc/nginx/.htpasswd username               # 创建用户 username 的密码文件
+RUN htpasswd -b /etc/nginx/.htpasswd username password      # 设置密码为 password
+RUN sed -i 's/user .*;/user root;/' /etc/nginx/nginx.conf   # nginx 文件中的 user 指定为 root，因为需要 root 权限来访问 docker unix socket
+ADD etc/nginx/sites-enabled/docker /etc/nginx/sites-enabled/docker     # 把 etc/nginx/sites-enabled/docker 加到 nginx site 中，后面介绍
+CMD service nginx start && sleep infinity                   # 启动 nginx
+```
+
+nginx 站点 etc/nginx/sites-enabled/docker 如下
+```
+upstream docker {
+  server unix:/var/run/docker.sock;      # 定义 docker unix socket 为 upstream，名为 docker
+}
+server {
+  listen 2375 default_server;      # 监听 2357
+  location / {
+    proxy_pass http://docker;      # 把请求转到上面定义的 docker socket
+    auth_basic_user_file /etc/nginx/.htpasswd;    # 请求的用户密码文件
+    auth_basic "Access restricted";               # 严格执行密码访问
+   }
+}
+
+```
+好了，现在可以启动容器了
+```
+$ docker run -d --name docker-authenticate -p 2375:2375 \     # 监听 2375 端口
+-v /var/run:/var/run dockerinpractice/docker-authenticate     # 
+```

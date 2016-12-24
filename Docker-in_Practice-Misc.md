@@ -354,7 +354,231 @@ docker run --cpuset-cpus=0 ubuntu:14.04 sh -c 'cat /dev/zero >/dev/null'
 - A & B 512, C 1024，那么 A & B 各占 1/4，C 占 1/2
 - A 10, B 100, C 1000，那么 A 占不到 1%，B 占不到 10%，C 占不到 90%
 
+### 限制容器内存的使用
 
+当容器运行时，可以分配宿主机上全部的内存；同时，我们还可以通过 -m/--memory 选项限制容器能分配的内存
+
+注意，对于 Ubuntu 系统，这个 capability 并不是默认 enable 的，可以调用 docker info 查看是否有 "No swap limit support" 警告，如果有那么就需要做一些设置，让 kernel 知道在系统启动时 enable memory-limiting capability。具体如下：
+```
+# 修改 /etc/default/grub 文件，加入
+GRUB_CMDLINE_LINUX="cgroup_enable=memory swapaccount=1"
+
+$ sudo update-grub
+```
+然后重启系统即可
+
+接下来可以做一些测试了
+```
+$ docker run -it -m 4m ubuntu:14.04 bash        # 限制内存分配最大 4m
+root@cffc126297e2:/# python3 -c 'open("/dev/zero").read(10*1024*1024)'    # 尝试通过 python 分配 10m
+Killed                                          # 脚本运行失败
+root@e9f13cacd42f:/# A=$(dd if=/dev/zero bs=1M count=10 | base64)         # 尝试通过命令行分配 10m
+$                                               # Bash 被 killed，容器退出，回到宿主机的 Bash
+$ echo $?
+137                                             # 返回错误码 137
+```
+
+接下来的测试使用 jess/stress 镜像中的 stress 工具，来测试系统的极限
+```
+$ docker run -m 100m jess/stress --vm 1 --vm-bytes 150M --vm-hang 0
+```
+上面的命令指定容器内存分配 limit 为 100m，容器启动时会使用 stress 分配 150m，会失败么？答案是不会
+
+可以使用下面的命令来验证 stress 确实分配了 150m 内存
+```
+docker top <container_id> -eo pid,size,args
+```
+那么，为什么没有失败呢？原来 Docker 会 double-reserve 内存，其中一半为实际物理内存，一半为 swap；故此，-m 100m 选项其实指定的 limit 为 200m 内存，故此没有失败。那么如果让 stress 分配 250m 肯定会失败吧
+```
+docker run -m 100m jess/stress --vm 1 --vm-bytes 250M --vm-hang 0
+```
+上面这条命令确实立刻就 terminate 了
+
+double-reservation 策略是默认的设置，不过我们可以通过 --memory 和 --memory-swap 的配合设置来调整。比如两个选项设置为相同的值，你就完全禁掉了 swap 内存，或者说 swap 内存 limit 为 0
+
+
+### 访问宿主机的资源
+
+容器使用 kernel 的 namespace 来做到资源的隔离，然而我们还是有很多方式来 bypass namespace，直接访问宿主机的资源
+
+##### -v volumn mounting
+
+volumes 是最常见的访问宿主机资源的方式，主要的好处有两点
+
+- 方便的共享宿主机的文件，而不需要把文件加到镜像的 layers 中，减少镜像的体积
+- 访问宿主机的文件系统，比访问容器内部的文件系统要快，性能更好
+
+##### --net=host 直接共享宿主机网络
+
+是完全的使用宿主机的网络，比如通过 netstat 命令可以看到宿主机上的网络应用和端口信息，而不会生成 veth 接口和 bridge 虚拟局域网 ip。主要的好处如下：
+
+- 更容易的 connect 容器，直接当做宿主机来访问就行，代价是失去了端口映射功能 (比如两个容器都想监听 80 端口，就不能都使用 --net=host 了，否则就要端口冲突了)
+- 网络连接的速度和性能更好
+ + --net=host 方式，直接使用宿主机网络，那么网络数据包就直接走 TCP/IP 到达 NIC (network interface card)
+ + 容器常规方式下，数据包则要经过 TCP/IP -> Veth pair -> Bridge -> NAT 最终到达 NIC
+
+##### 其他方式
+
+- --pid=host 用于共享宿主机的 pid 信息
+- --ipc=host 用于共享宿主机的共享内存、ipc 等资源
+- --uts=host 用于共享宿主机的 hostname, NIS domain 等资源
+
+
+### Device Mapper storage driver 和默认容器磁盘空间
+
+Docker 自带一些 storage drivers 的支持，比如 Centos & Red Hat 默认的 devicemapper，Ubuntu 默认的 AUFS 等；相比起来，devicemapper bug 少一些，而且在一些方面上更加灵活
+
+Devicemapper 默认的行为是分配一个文件，把它视为 "device" 来读写，比如我们上面提到过的 syslog 使用 /dev/log 文件来写入。这个设备文件是有 capability limit 的，不能自动增加文件尺寸
+
+比如下面的 Dockerfile
+```
+FROM ubuntu:14.04
+RUN truncate --size 11G /root/file
+```
+在 build 镜像时会出错，11G 太大了，无论你的宿主机有多大的磁盘空间也都会失败，因为 devicemapper 对容器的限制是 10G
+
+通过 --storage-opt dm.basesize=xxx 来修改，我们还可以把它放到 DOCKER_OPTIONS 中，避免每次都带上这个选项
+```
+DOCKER_OPTIONS="-s devicemapper --storage-opt dm.basesize=20G"
+```
+
+
+调试容器
+===========
+
+### 使用 nsenter 调试容器网络
+
+之前介绍过使用 socat 作为 proxy，代理对其他容器服务的请求，此时可以通过 socat 来调试和诊断对容器的网络连接；然而如果仅为了调试来 setup socat proxy 还是稍嫌复杂了，使用 nsenter 可以更加便捷的完成调试任务。
+
+##### 容器化安装
+```
+$ docker run -v /usr/local/bin:/target jpetazzo/nsenter
+```
+此时，nsenter 会被安装在宿主的 /usr/local/bin 目录，可以在宿主机上直接被调用，就像直接安装在宿主机上一样
+
+##### 通过宿主机的 bash 访问容器
+
+我们知道 BusyBox 镜像是不带 bash 的，下面通过 nsenter 来达成使用宿主机 bash 进入容器的目标
+```
+$ docker run -ti busybox /bin/bash     # 这个会失败， busybox 不带 /bin/bash
+FATA[0000] Error response from daemon: Cannot start container
+$ CID=$(docker run -d busybox sleep 9999)    # 启动 busybox 并进入 sleep，把容器 id 保存到 CID 中
+$ PID=$(docker inspect --format {{.State.Pid}} $CID)    # 获取 busybox 容器的 PID
+$ sudo nsenter --target $PID \       # 在宿主机运行 nsenter，通过 --target 指定欲进入的容器 PID
+--uts --ipc --net /bin/bash          # 其他选项指定 capability 以及进入容器后要启动的程序，也即宿主机的 /bin/bash
+root@781c1fed2b18:~#                 # 看到进入容器了，而且启动了 /bin/bash
+```
+
+##### 使用宿主的 tcpdump 来调试网络应用
+
+要使用 tcpdump，在启动 nsenter 的时候需要指定 --net 选项，以允许在宿主机上看到容器的网络，进而才能通过 tcpdump 调试
+
+这里假定我们还在上一节启动的 busybox 容器中
+```
+root@781c1fed2b18:/# tcpdump -XXs 0 -w /tmp/google.tcpdump &      # 容器中使用宿主的 bash，后台启动宿主的 tcpdump
+
+root@781c1fed2b18:/# wget google.com      # 然后调用一个 wget 命令，让 tcpdump 来 dump 网络连接信息
+Resolving google.com (google.com)... 216.58.208.46, 2a00:1450:4009:80d::200e
+............
+http://www.google.co.uk/?gfe_rd=cr&ei=tLzEVcCXN7Lj8wepgarQAQ
+Resolving www.google.co.uk (www.google.co.uk)... 216.58.208.67, 2a00:1450:4009:80a::2003
+............
+Saving to: ‘index.html’
+2015-08-07 15:12:05 (2.18 MB/s) - ‘index.html’ saved [18720]
+............
+```
+
+##### 找出宿主机中目标容器所对应的 veth interface 设备
+
+有时我们需要很快的 down 掉目标容器的网络，一般的做法是使用一些网络工具来模拟网络 breakage，非常麻烦。我们看看用 nsenter 怎么完成这个任务
+```
+$ docker run -d --name offlinetest ubuntu:14.04.2 sleep infinity        # 重新启动一个目标容器
+fad037a77a2fc337b7b12bc484babb2145774fde7718d1b5b53fb7e9dc0ad7b3
+
+$ docker exec offlinetest ping -q -c1 8.8.8.8
+1 packets transmitted, 1 received, 0% packet loss, time 0ms     # 验证容器内部 ping 是 ok 的
+
+$ docker exec offlinetest ifconfig eth0 down      # 验证我们不能直接在宿主机上 down 掉容器的网络
+SIOCSIFFLAGS: Operation not permitted
+
+$ PID=$(docker inspect --format {{.State.Pid}} offlinetest)     # 找到容器 PID 准备 nsenter 进入容器
+$ nsenter --target $PID --net ethtool -S eth0      # 进入容器，且指定 --net 选项，并启动宿主的 ethtool 工具
+NIC statistics:
+peer_ifindex: 53         # 容器的 eth0 是 veth pair 的一端，另一端在宿主机上
+
+$ ip addr | grep '^53'   # 宿主机上查找 53 interface
+53: veth2e7d114: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP
+
+$ sudo ifconfig veth2e7d114 down      # 上面看到 53 接口对应的 veth pair 就是 veth2e7d114 ，down 掉它！
+
+$ docker exec offlinetest ping -q -c1 8.8.8.8
+1 packets transmitted, 0 received, 100% packet loss, time 0ms      # 看到容器断网了！
+```
+
+综上 3 个例子，nsenter 的作用集中体现在可以进入容器内，同时使用或者说保留宿主机的诊断工具，非常方便，因为容器不需要做任何设置和修改
+
+
+### 使用 tcpflow 调试容器网络
+
+前面的技巧中，我们可以通过 nsenter 使用宿主机的 tcpdump 来研究容器的网络包信息，然而 tcpdump 属于比较底层的调试工具，上手难度高，而且如果要调试更上层的应用程序，会比较复杂和麻烦；可以考虑使用 tcpflow
+
+容器安装和启动
+```
+$ IMG=dockerinpractice/tcpflow
+$ docker pull $IMG
+$ alias tcpflow="docker run --rm --net host $IMG"        # 注意到 --net=host 选项，共享宿主机的网络
+```
+
+有两种方法来调试容器的网络包
+
+- 监控 docker0 interface，此时宿主机和容器全部网络包都会被监控，需要使用 packet-filtering expression 来过滤
+- 类似上一节的方法，找到并监控对应容器的 veth pair interface，这样监控到的都是容器的网络包
+
+第一种就很好用，看下例
+```
+$ docker run -d --name tcpflowtest alpine:3.2 sleep 30d               # 启动一个 alpine 容器做测试
+$ docker inspect -f '{{ .NetworkSettings.IPAddress }}' tcpflowtest    # 容器的内部局域网 ip
+172.17.0.1
+$ tcpflow -c -J -i docker0 'host 172.17.0.1 and port 80'              # 监控 docker0 接口，并过滤内网 ip 和端口
+tcpflow: listening on docker0
+```
+
+看到，使用起来非常方便，而且同样不需要修改和配置目标容器
+
+
+### 容器应用失败的调试
+
+当容器中有应用程序运行失败，又找不出原因时，可以考虑使用 strace 工具来跟踪系统调用，然后和正常运行的应用程序做比较，可能会帮助找到问题所在
+
+比如在 ubuntu:12.04 的容器中，常常会遇到下面的错误，而 ubuntu:14.04 就没问题
+```
+[root@centos vagrant]# docker run -ti ubuntu:12.04
+root@afade8b94d32:/# useradd -m -d /home/dockerinpractice dockerinpractice       # useradd 会失败
+root@afade8b94d32:/# echo $?               # 返回非 0 值
+12
+```
+
+使用 strace 工具来追踪
+```
+# strace -f \          # -f 选项跟踪进程以及进程的派生进程
+useradd -m -d /home/dockerinpractice dockerinpractice     # 后面跟着需要跟踪的进程
+
+execve("/usr/sbin/useradd", ["useradd", "-m", "-d", ... "dockerinpractice"], ... = 0       # 以下是输出，execve 表示执行参数中的命令，最后的 0 表示这条命令的返回值
+[...]
+open("/proc/self/task/39/attr/current", O_RDONLY) = 9      # 到这个命令时，打开文件，返回的 9 是文件的 handle
+read(9, "system_u:system_r:svirt_lxc_net_"...,4095) = 46   # 读 handle 9 对应的文件
+close(9) = 0                                               # 关闭文件
+[...]
+open("/etc/selinux/config", O_RDONLY) = -1 ENOENT (No such file or directory)    # 运行到这里出错了，未找到文件
+open("/etc/selinux/targeted/contexts/files/ file_contexts.subs_dist", O_RDONLY) = -1 ENOENT (No such file or directory)
+open("/etc/selinux/targeted/contexts/files/
+file_contexts.subs", O_RDONLY) = -1 ENOENT (No such file or directory)
+open("/etc/selinux/targeted/contexts/files/ file_contexts", O_RDONLY) = -1 ENOENT (No such file or directory)
+[...]
+exit_group(12)         # 这个就是整个应用最终的返回值 12
+```
+
+那么我们找到了问题，是因为应用要访问 selinux 的文件，然而并没有这个文件
 
 
 
